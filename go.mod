@@ -1,3 +1,3 @@
-module github.com/EixyScience/zmesh
+﻿module github.com/EixyScience/zmesh
 
-go 1.26
+go 1.25
