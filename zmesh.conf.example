@@ -1,0 +1,27 @@
+; zmesh.conf (ini)
+[node]
+id = node-01
+site = site-a
+
+; LAN membership (UDP)
+[lan]
+udp_listen = 0.0.0.0:48080
+udp_peers  = 192.168.1.10:48080,192.168.1.11:48080
+
+; WAN control-plane (HTTP/HTTPS) — reverse proxy を避けたい場合は任意ポートで直結
+[wan]
+enabled = true
+scheme  = http
+listen  = 0.0.0.0:48443
+
+; governor 間の対向（複数可）
+; 例: http://gov-site-b.example.net:48443
+peers = http://10.0.20.5:48443,http://10.0.30.5:48443
+
+[role]
+; 初期は固定でOK（あなたの方針）
+prime = false
+governor = true
+
+[log]
+level = info
