@@ -5,50 +5,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/EixyScience/zmesh/internal/router"
 )
-
-type PingReply struct {
-	OK      bool   `json:"ok"`
-	Message string `json:"message"`
-}
-
-type Heartbeat struct {
-	NodeID string `json:"node_id"`
-	Site   string `json:"site"`
-	Role   string `json:"role"`
-	TSUnix int64  `json:"ts_unix"`
-}
 
 type HTTP struct {
 	Listen string
 	Peers  []string
+
+	RegistryTTL time.Duration
 }
 
-func (h *HTTP) Serve(ctx context.Context, onHB func(from string, hb Heartbeat)) error {
-	mux := http.NewServeMux()
+func (h *HTTP) Serve(ctx context.Context) error {
+	reg := router.NewRegistry(h.RegistryTTL)
+	rt := router.New(reg)
 
-	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(PingReply{OK: true, Message: "pong"})
-	})
-
-	mux.HandleFunc("/hb", func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
-		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		var hb Heartbeat
-		if err := json.Unmarshal(body, &hb); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(PingReply{OK: false, Message: "bad json"})
-			return
-		}
-		if onHB != nil {
-			onHB(r.RemoteAddr, hb)
-		}
-		_ = json.NewEncoder(w).Encode(PingReply{OK: true, Message: "ok"})
-	})
+	mux := rt.Handler()
 
 	srv := &http.Server{
 		Addr:              h.Listen,
@@ -61,6 +36,7 @@ func (h *HTTP) Serve(ctx context.Context, onHB func(from string, hb Heartbeat)) 
 		return err
 	}
 
+	go reg.RunJanitor(ctx)
 	go func() {
 		<-ctx.Done()
 		_ = srv.Shutdown(context.Background())
@@ -82,11 +58,20 @@ func (h *HTTP) Ping(baseURL string, timeout time.Duration) (bool, string, error)
 	return true, "pong", nil
 }
 
-func (h *HTTP) SendHeartbeat(hb Heartbeat, timeout time.Duration) {
+type Heartbeat struct {
+	NodeID string `json:"node_id"`
+	Site   string `json:"site"`
+	Role   string `json:"role"`
+	TSUnix int64  `json:"ts_unix"`
+}
+
+func (h *HTTP) SendHeartbeat(instanceID string, hb Heartbeat, timeout time.Duration) {
 	b, _ := json.Marshal(hb)
 	c := &http.Client{Timeout: timeout}
 	for _, base := range h.Peers {
-		req, _ := http.NewRequest("POST", base+"/hb", bytes.NewReader(b))
+		// instance-scoped endpoint
+		url := fmt.Sprintf("%s/i/%s/hb", base, instanceID)
+		req, _ := http.NewRequest("POST", url, bytes.NewReader(b))
 		req.Header.Set("Content-Type", "application/json")
 		_, _ = c.Do(req)
 	}

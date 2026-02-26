@@ -1,17 +1,17 @@
-﻿package agent
+package agent
 
 import (
-"context"
-"fmt"
-"os"
-"os/signal"
-"sync/atomic"
-"syscall"
-"time"
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
-"github.com/EixyScience/zmesh/internal/config"
-"github.com/EixyScience/zmesh/internal/membership"
-"github.com/EixyScience/zmesh/internal/transport"
+	"github.com/EixyScience/zmesh/internal/config"
+	"github.com/EixyScience/zmesh/internal/id"
+	"github.com/EixyScience/zmesh/internal/membership"
+	"github.com/EixyScience/zmesh/internal/transport"
 )
 
 type Agent struct{ cfg *config.Config }
@@ -19,60 +19,89 @@ type Agent struct{ cfg *config.Config }
 func New(cfg *config.Config) *Agent { return &Agent{cfg: cfg} }
 
 func (a *Agent) Run() error {
-ctx, cancel := context.WithCancel(context.Background())
-defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-var recv uint64
+	// LAN UDP
+	udp := &membership.UDP{
+		Listen: a.cfg.LAN.UDPListen,
+		Peers:  a.cfg.LAN.UDPPeers,
+	}
+	go func() {
+		_ = udp.Serve(ctx, func(from string, hb membership.Heartbeat) {
+			fmt.Printf("[lan] recv from=%s node=%s site=%s ts=%d\n", from, hb.NodeID, hb.Site, hb.TSUnix)
+		})
+	}()
 
-udp := &membership.UDP{
-Listen: a.cfg.LAN.UDPListen,
-Peers:  a.cfg.LAN.UDPPeers,
-}
-go func() {
-_ = udp.Serve(ctx, func(from string, hb membership.Heartbeat) {
-atomic.AddUint64(&recv, 1)
-fmt.Printf("[lan] recv from=%s node=%s site=%s ts=%d\n", from, hb.NodeID, hb.Site, hb.TSUnix)
-})
-}()
+	// Role string
+	role := "node"
+	if a.cfg.Role.Prime {
+		role = "prime"
+	} else if a.cfg.Role.Governor {
+		role = "governor"
+	}
 
-var httpx *transport.HTTP
-if a.cfg.WAN.Enabled {
-httpx = &transport.HTTP{Listen: a.cfg.WAN.Listen, Peers: a.cfg.WAN.Peers}
-go func() {
-_ = httpx.Serve(ctx, func(from string, hb transport.Heartbeat) {
-fmt.Printf("[wan] recv from=%s node=%s site=%s role=%s ts=%d\n", from, hb.NodeID, hb.Site, hb.Role, hb.TSUnix)
-})
-}()
-}
+	// ScaleFS instance ID (UUIDv7)
+	instanceID := a.cfg.ScaleFS.ID
+	if instanceID == "" {
+		u, err := id.NewUUID7()
+		if err != nil {
+			return err
+		}
+		instanceID = u
+		fmt.Printf("[warn] scalefs.id missing; generated uuid7=%s (set it in config)\n", instanceID)
+	} else if err := id.ValidateUUID(instanceID); err != nil {
+		return fmt.Errorf("invalid scalefs.id: %w", err)
+	}
 
-role := "node"
-if a.cfg.Role.Prime { role = "prime" } else if a.cfg.Role.Governor { role = "governor" }
+	// WAN HTTP (optional)
+	var httpx *transport.HTTP
+	if a.cfg.WAN.Enabled {
+		httpx = &transport.HTTP{
+			Listen:      a.cfg.WAN.Listen,
+			Peers:       a.cfg.WAN.Peers,
+			RegistryTTL: 10 * time.Minute, // lazy instances expire if unused
+		}
+		go func() {
+			_ = httpx.Serve(ctx)
+		}()
+	}
 
-tick := time.NewTicker(1 * time.Second)
-defer tick.Stop()
+	// signal handling
+	sigc := make(chan os.Signal, 2)
+	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 
-sigc := make(chan os.Signal, 2)
-signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
+	fmt.Printf("zmesh agent start node=%s site=%s role=%s scalefs=%s lan=%s wan=%v\n",
+		a.cfg.Node.ID, a.cfg.Node.Site, role, instanceID, a.cfg.LAN.UDPListen, a.cfg.WAN.Enabled)
 
-fmt.Printf("zmesh agent start node=%s site=%s role=%s lan=%s wan=%v\n",
-a.cfg.Node.ID, a.cfg.Node.Site, role, a.cfg.LAN.UDPListen, a.cfg.WAN.Enabled)
+	tick := time.NewTicker(1 * time.Second)
+	defer tick.Stop()
 
-for {
-select {
-case <-sigc:
-fmt.Println("zmesh agent stopping...")
-cancel()
-return nil
-case t := <-tick.C:
-udp.Send(membership.Heartbeat{NodeID: a.cfg.Node.ID, Site: a.cfg.Node.Site, TSUnix: t.Unix()})
-if httpx != nil {
-httpx.SendHeartbeat(transport.Heartbeat{NodeID: a.cfg.Node.ID, Site: a.cfg.Node.Site, Role: role, TSUnix: t.Unix()}, 2*time.Second)
-}
-}
-}
+	for {
+		select {
+		case <-sigc:
+			fmt.Println("zmesh agent stopping...")
+			cancel()
+			return nil
+		case t := <-tick.C:
+			udp.Send(membership.Heartbeat{
+				NodeID: a.cfg.Node.ID,
+				Site:   a.cfg.Node.Site,
+				TSUnix: t.Unix(),
+			})
+			if httpx != nil {
+				httpx.SendHeartbeat(instanceID, transport.Heartbeat{
+					NodeID: a.cfg.Node.ID,
+					Site:   a.cfg.Node.Site,
+					Role:   role,
+					TSUnix: t.Unix(),
+				}, 2*time.Second)
+			}
+		}
+	}
 }
 
 func PingHTTP(baseURL string, timeout time.Duration) (bool, string, error) {
-h := &transport.HTTP{}
-return h.Ping(baseURL, timeout)
+	h := &transport.HTTP{}
+	return h.Ping(baseURL, timeout)
 }

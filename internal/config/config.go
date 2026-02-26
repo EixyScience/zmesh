@@ -1,4 +1,4 @@
-﻿package config
+package config
 
 import (
 	"bufio"
@@ -22,6 +22,9 @@ type Config struct {
 		Prime    bool
 		Governor bool
 	}
+	ScaleFS struct {
+		ID string // UUIDv7
+	}
 }
 
 func Load(path string) (*Config, error) {
@@ -37,7 +40,7 @@ func Load(path string) (*Config, error) {
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
-		line = strings.TrimPrefix(line, "\ufeff")
+		line = strings.TrimPrefix(line, "\ufeff") // tolerate UTF-8 BOM
 		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -84,6 +87,12 @@ func Load(path string) (*Config, error) {
 			if key == "governor" {
 				cfg.Role.Governor = parseBool(val)
 			}
+		case "scalefs":
+			if key == "id" {
+				cfg.ScaleFS.ID = val
+			}
+		default:
+			// ignore unknown sections/keys
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -103,6 +112,7 @@ func splitCSV(s string) []string {
 	}
 	return out
 }
+
 func parseBool(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "1", "true", "yes", "y", "on":
