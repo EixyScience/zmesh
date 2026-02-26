@@ -1,107 +1,96 @@
-package agent
+package main
 
 import (
-	"context"
+	"flag"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
+	"strings"
 	"time"
 
+	"github.com/EixyScience/zmesh/internal/agent"
 	"github.com/EixyScience/zmesh/internal/config"
 	"github.com/EixyScience/zmesh/internal/id"
-	"github.com/EixyScience/zmesh/internal/membership"
-	"github.com/EixyScience/zmesh/internal/transport"
+	"github.com/EixyScience/zmesh/internal/version"
 )
 
-type Agent struct{ cfg *config.Config }
-
-func New(cfg *config.Config) *Agent { return &Agent{cfg: cfg} }
-
-func (a *Agent) Run() error {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// LAN UDP
-	udp := &membership.UDP{
-		Listen: a.cfg.LAN.UDPListen,
-		Peers:  a.cfg.LAN.UDPPeers,
-	}
-	go func() {
-		_ = udp.Serve(ctx, func(from string, hb membership.Heartbeat) {
-			fmt.Printf("[lan] recv from=%s node=%s site=%s ts=%d\n", from, hb.NodeID, hb.Site, hb.TSUnix)
-		})
-	}()
-
-	// Role string
-	role := "node"
-	if a.cfg.Role.Prime {
-		role = "prime"
-	} else if a.cfg.Role.Governor {
-		role = "governor"
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(2)
 	}
 
-	// ScaleFS instance ID (UUIDv7)
-	instanceID := a.cfg.ScaleFS.ID
-	if instanceID == "" {
-		u, err := id.NewUUID7()
-		if err != nil {
-			return err
-		}
-		instanceID = u
-		fmt.Printf("[warn] scalefs.id missing; generated uuid7=%s (set it in config)\n", instanceID)
-	} else if err := id.ValidateUUID(instanceID); err != nil {
-		return fmt.Errorf("invalid scalefs.id: %w", err)
-	}
-
-	// WAN HTTP (optional)
-	var httpx *transport.HTTP
-	if a.cfg.WAN.Enabled {
-		httpx = &transport.HTTP{
-			Listen:      a.cfg.WAN.Listen,
-			Peers:       a.cfg.WAN.Peers,
-			RegistryTTL: 10 * time.Minute, // lazy instances expire if unused
-		}
-		go func() {
-			_ = httpx.Serve(ctx)
-		}()
-	}
-
-	// signal handling
-	sigc := make(chan os.Signal, 2)
-	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
-
-	fmt.Printf("zmesh agent start node=%s site=%s role=%s scalefs=%s lan=%s wan=%v\n",
-		a.cfg.Node.ID, a.cfg.Node.Site, role, instanceID, a.cfg.LAN.UDPListen, a.cfg.WAN.Enabled)
-
-	tick := time.NewTicker(1 * time.Second)
-	defer tick.Stop()
-
-	for {
-		select {
-		case <-sigc:
-			fmt.Println("zmesh agent stopping...")
-			cancel()
-			return nil
-		case t := <-tick.C:
-			udp.Send(membership.Heartbeat{
-				NodeID: a.cfg.Node.ID,
-				Site:   a.cfg.Node.Site,
-				TSUnix: t.Unix(),
-			})
-			if httpx != nil {
-				httpx.SendHeartbeat(instanceID, transport.Heartbeat{
-					NodeID: a.cfg.Node.ID,
-					Site:   a.cfg.Node.Site,
-					Role:   role,
-					TSUnix: t.Unix(),
-				}, 2*time.Second)
-			}
-		}
+	switch os.Args[1] {
+	case "agent":
+		agentCmd(os.Args[2:])
+	case "ping":
+		pingCmd(os.Args[2:])
+	case "newid":
+		newidCmd()
+	case "version":
+		fmt.Println(version.String())
+	default:
+		usage()
+		os.Exit(2)
 	}
 }
 
-func PingHTTP(baseURL string, timeout time.Duration) (bool, string, error) {
-	h := &transport.HTTP{}
-	return h.Ping(baseURL, timeout)
+func usage() {
+	fmt.Fprint(os.Stderr, `zmesh (bootstrap)
+
+Usage:
+  zmesh agent   -c <config.ini>
+  zmesh ping    -url <http(s)://host:port> [-timeout 3s]
+  zmesh newid
+  zmesh version
+`)
+}
+
+func agentCmd(args []string) {
+	fs := flag.NewFlagSet("agent", flag.ExitOnError)
+	cfgPath := fs.String("c", "zmesh.conf", "path to config ini")
+	fs.Parse(args)
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config load error: %v\n", err)
+		os.Exit(1)
+	}
+
+	a := agent.New(cfg)
+	if err := a.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func pingCmd(args []string) {
+	fs := flag.NewFlagSet("ping", flag.ExitOnError)
+	url := fs.String("url", "", "target URL like http://host:port")
+	timeout := fs.Duration("timeout", 3*time.Second, "timeout")
+	fs.Parse(args)
+
+	if strings.TrimSpace(*url) == "" {
+		fmt.Fprintln(os.Stderr, "ping: -url is required")
+		os.Exit(2)
+	}
+
+	ok, msg, err := agent.PingHTTP(*url, *timeout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ping error: %v\n", err)
+		os.Exit(1)
+	}
+	if !ok {
+		fmt.Printf("NG: %s\n", msg)
+		os.Exit(1)
+	}
+	fmt.Printf("OK: %s\n", msg)
+}
+
+func newidCmd() {
+	u, err := id.NewUUID7()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "newid error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(u)
 }
