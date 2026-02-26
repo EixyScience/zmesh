@@ -53,6 +53,11 @@ type Instance struct {
 	q   *queue.Queue
 	// ZMESH:PENDING:MVP: in-memory pending store (replace with durable journal)
 	pending map[string]queue.Item // event_id -> item (dedupe)
+
+	// ZMESH:STATE: injected from agent at instance creation
+	pending *pendingstore.Store
+	bench   *bench.Store
+	nodeID  string // this node id (from config)
 }
 
 func New(id string) *Instance {

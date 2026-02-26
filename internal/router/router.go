@@ -320,6 +320,8 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 	// ---------------- Queue ----------------
 
 	case "/queue/enqueue":
+		now := time.Now()
+		st := in.TokenStatus(now)
 		// ZMESH:QUEUE: enqueue is idempotent by event_id (dedupe)
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
@@ -440,17 +442,82 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "/pending/clear":
-		// ZMESH:TEST: clear pending (later restrict by token holder / auth)
+		// ZMESH:PENDING:FLAG:API
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
 			return
 		}
-		in.PendingClear()
+		var req struct {
+			NodeID string `json:"node_id"`
+		}
+		if err := decodeJSON(r, &req, 1<<20); err != nil {
+			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "bad json"})
+			return
+		}
+		nid := strings.TrimSpace(req.NodeID)
+		if nid == "" {
+			nid = in.NodeID()
+		}
+		if err := in.PendingSet(nid, false, 0); err != nil {
+			writeJSON(w, http.StatusInternalServerError, pingReply{OK: false, Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "ok", "instance": in.ID, "node_id": nid})
+		return
+
+	case "/pending/status":
+		// ZMESH:PENDING:FLAG:API
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+		// node_id is optional; default to this node
+		nid := strings.TrimSpace(r.URL.Query().Get("node_id"))
+		if nid == "" {
+			nid = in.NodeID() // 追加するgetter
+		}
+		st, err := in.PendingGet(nid) // 追加するメソッド
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, pingReply{OK: false, Message: err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":       true,
-			"message":  "ok",
-			"instance": in.ID,
+			"ok": true, "message": "ok", "instance": in.ID,
+			"node_id":             nid,
+			"dirty":               st.Dirty,
+			"dirty_since_unix_ms": st.DirtySinceUnixMs,
+			"updated_unix_ms":     st.UpdatedUnixMs,
 		})
+		return
+
+	case "/pending/set":
+		// ZMESH:PENDING:FLAG:API
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+		var req struct {
+			NodeID      string `json:"node_id"`
+			Dirty       bool   `json:"dirty"`
+			SinceUnixMs int64  `json:"dirty_since_unix_ms"`
+		}
+		if err := decodeJSON(r, &req, 1<<20); err != nil {
+			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "bad json"})
+			return
+		}
+		nid := strings.TrimSpace(req.NodeID)
+		if nid == "" {
+			nid = in.NodeID()
+		}
+		// If setting dirty and since is 0, set now.
+		if req.Dirty && req.SinceUnixMs == 0 {
+			req.SinceUnixMs = time.Now().UnixMilli()
+		}
+		if err := in.PendingSet(nid, req.Dirty, req.SinceUnixMs); err != nil {
+			writeJSON(w, http.StatusInternalServerError, pingReply{OK: false, Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "ok", "instance": in.ID, "node_id": nid})
 		return
 
 	case "/reconcile/run":
@@ -510,6 +577,18 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 			Peers:       peers,
 			PulledItems: pulled,
 			EnqueuedNew: enqNew,
+		})
+		return
+
+	case "/bench/status":
+		// ZMESH:BENCH:API
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "message": "ok", "instance": in.ID,
+			"links": in.BenchSnapshot(), // 追加メソッド
 		})
 		return
 
