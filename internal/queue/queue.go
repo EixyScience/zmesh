@@ -1,415 +1,159 @@
-package router
+package queue
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
-	"net/http"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
-
-	"github.com/EixyScience/zmesh/internal/id"
-	"github.com/EixyScience/zmesh/internal/instance"
-	"github.com/EixyScience/zmesh/internal/queue"
-	"github.com/EixyScience/zmesh/internal/token"
 )
 
-type Registry struct {
-	mu       sync.Mutex
-	items    map[string]*instance.Instance
-	ttl      time.Duration
-	janitorI time.Duration
+var (
+	ErrNotFound = errors.New("queue: not found")
+	ErrConflict = errors.New("queue: conflict")
+	ErrBadInput = errors.New("queue: bad input")
+)
+
+// Item is an idempotent queue element.
+// ZMESH:DEDUP: EventID is the idempotency key across retries/reconcile.
+type Item struct {
+	EventID  string `json:"event_id"` // required (dedupe key)
+	NodeID   string `json:"node_id"`  // origin node (who reported)
+	TSUnixMs int64  `json:"ts_unix_ms"`
+
+	Kind    string `json:"kind"`    // e.g. "change", "snapshot"
+	Summary string `json:"summary"` // human/debug
+
+	// Worker lease
+	WorkerNodeID string `json:"worker_node_id,omitempty"`
+	LeaseUntilMs int64  `json:"lease_until_ms,omitempty"`
+
+	// Ack
+	Acked     bool   `json:"acked"`
+	AckBy     string `json:"ack_by,omitempty"`
+	AckMsg    string `json:"ack_msg,omitempty"`
+	AckUnixMs int64  `json:"ack_unix_ms,omitempty"`
 }
 
-func NewRegistry(ttl time.Duration) *Registry {
-	return &Registry{
-		items:    make(map[string]*instance.Instance),
-		ttl:      ttl,
-		janitorI: 30 * time.Second,
+type Queue struct {
+	mu sync.Mutex
+
+	order []string
+	items map[string]*Item
+	seen  map[string]struct{}
+
+	lease    time.Duration
+	maxItems int
+}
+
+func New(lease time.Duration) *Queue {
+	if lease <= 0 {
+		lease = 60 * time.Second
+	}
+	return &Queue{
+		order:    make([]string, 0, 4096),
+		items:    make(map[string]*Item, 4096),
+		seen:     make(map[string]struct{}, 4096),
+		lease:    lease,
+		maxItems: 100000, // ZMESH:PERSIST: durable backend later
 	}
 }
 
-func (r *Registry) GetOrCreate(instanceID string) (*instance.Instance, error) {
-	if err := id.ValidateUUID(instanceID); err != nil {
-		return nil, err
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if in, ok := r.items[instanceID]; ok {
-		in.Touch()
-		return in, nil
-	}
-	in := instance.New(instanceID)
-	r.items[instanceID] = in
-	return in, nil
-}
-
-func (r *Registry) RunJanitor(ctx context.Context) {
-	t := time.NewTicker(r.janitorI)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			r.sweep()
-		}
-	}
-}
-
-func (r *Registry) sweep() {
-	if r.ttl <= 0 {
-		return
-	}
-	now := time.Now()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for k, in := range r.items {
-		if now.Sub(in.LastAccess()) > r.ttl {
-			delete(r.items, k)
-		}
-	}
-}
-
-type Router struct {
-	reg *Registry
-
-	tokenLease time.Duration
-}
-
-func New(reg *Registry) *Router {
-	return &Router{
-		reg:        reg,
-		tokenLease: 30 * time.Second,
-	}
-}
-
-type pingReply struct {
-	OK      bool   `json:"ok"`
-	Message string `json:"message"`
-}
-
-type hbReq struct {
-	NodeID string `json:"node_id"`
-	Site   string `json:"site"`
-	Role   string `json:"role"`
-	TSUnix int64  `json:"ts_unix"`
-}
-
-type pollReply struct {
-	OK       bool             `json:"ok"`
-	Latest   uint64           `json:"latest"`
-	Events   []instance.Event `json:"events"`
-	Instance string           `json:"instance"`
-}
-
-type tokenStatusReply struct {
-	OK       bool        `json:"ok"`
-	Instance string      `json:"instance"`
-	Token    token.State `json:"token"`
-	NowUnix  int64       `json:"now_unix"`
-}
-
-type tokenActionReq struct {
-	NodeID string `json:"node_id"`
-}
-
-type tokenActionReply struct {
-	OK       bool        `json:"ok"`
-	Message  string      `json:"message"`
-	Instance string      `json:"instance"`
-	Token    token.State `json:"token"`
-	NowUnix  int64       `json:"now_unix"`
-}
-
-type queueEnqReply struct {
-	OK       bool   `json:"ok"`
-	Message  string `json:"message"`
-	Instance string `json:"instance"`
-	Inserted bool   `json:"inserted"`
-}
-
-type queuePollReply struct {
-	OK       bool         `json:"ok"`
-	Message  string       `json:"message"`
-	Instance string       `json:"instance"`
-	Items    []queue.Item `json:"items"`
-}
-
-type queueAckReq struct {
-	EventID      string `json:"event_id"`
-	WorkerNodeID string `json:"worker_node_id"`
-	Message      string `json:"message"`
-}
-
-type queueAckReply struct {
-	OK       bool       `json:"ok"`
-	Message  string     `json:"message"`
-	Instance string     `json:"instance"`
-	Item     queue.Item `json:"item"`
-}
-
-func (rt *Router) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, pingReply{OK: true, Message: "pong"})
-	})
-	mux.HandleFunc("/i/", rt.dispatch)
-	return mux
-}
-
-func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/i/")
-	parts := strings.SplitN(rest, "/", 2)
-	if len(parts) != 2 {
-		writeJSON(w, http.StatusNotFound, pingReply{OK: false, Message: "invalid path"})
-		return
-	}
-	instanceID := parts[0]
-	action := "/" + parts[1]
-
-	in, err := rt.reg.GetOrCreate(instanceID)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "invalid instance id"})
-		return
+// Enqueue inserts item if EventID not seen yet.
+// ZMESH:QUEUE:MVP: in-memory queue (rebuildable)
+func (q *Queue) Enqueue(it Item) (bool, error) {
+	if it.EventID == "" {
+		return false, ErrBadInput
 	}
 
-	switch action {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
-	case "/ping":
-		writeJSON(w, http.StatusOK, pingReply{OK: true, Message: "pong"})
-		return
-
-	case "/hb":
-		if r.Method != http.MethodPost {
-			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
-			return
-		}
-		var req hbReq
-		if err := decodeJSON(r, &req, 1<<20); err != nil {
-			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "bad json"})
-			return
-		}
-		ts := time.Unix(req.TSUnix, 0)
-		in.RecordHeartbeat(r.RemoteAddr, req.NodeID, req.Site, req.Role, ts)
-		writeJSON(w, http.StatusOK, pingReply{OK: true, Message: "ok"})
-		return
-
-	case "/poll":
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
-			return
-		}
-		after, limit, err := parsePollQuery(r)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: err.Error()})
-			return
-		}
-		latest, evs := in.Poll(after, limit)
-		writeJSON(w, http.StatusOK, pollReply{
-			OK:       true,
-			Latest:   latest,
-			Events:   evs,
-			Instance: in.ID,
-		})
-		return
-
-	// ---------------- Token ----------------
-
-	case "/token/status":
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
-			return
-		}
-		now := time.Now()
-		st := in.TokenStatus(now)
-		writeJSON(w, http.StatusOK, tokenStatusReply{OK: true, Instance: in.ID, Token: st, NowUnix: now.Unix()})
-		return
-
-	case "/token/claim":
-		if r.Method != http.MethodPost {
-			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
-			return
-		}
-		var req tokenActionReq
-		if err := decodeJSON(r, &req, 1<<20); err != nil {
-			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "bad json"})
-			return
-		}
-		req.NodeID = strings.TrimSpace(req.NodeID)
-		if req.NodeID == "" {
-			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "node_id required"})
-			return
-		}
-		now := time.Now()
-		st, err := in.TokenClaim(now, req.NodeID, rt.tokenLease)
-		if err == token.ErrConflict {
-			writeJSON(w, http.StatusConflict, tokenActionReply{OK: false, Message: "conflict", Instance: in.ID, Token: st, NowUnix: now.Unix()})
-			return
-		}
-		writeJSON(w, http.StatusOK, tokenActionReply{OK: true, Message: "ok", Instance: in.ID, Token: st, NowUnix: now.Unix()})
-		return
-
-	case "/token/renew":
-		if r.Method != http.MethodPost {
-			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
-			return
-		}
-		var req tokenActionReq
-		if err := decodeJSON(r, &req, 1<<20); err != nil {
-			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "bad json"})
-			return
-		}
-		req.NodeID = strings.TrimSpace(req.NodeID)
-		if req.NodeID == "" {
-			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "node_id required"})
-			return
-		}
-		now := time.Now()
-		st, err := in.TokenRenew(now, req.NodeID, rt.tokenLease)
-		if err == token.ErrConflict {
-			writeJSON(w, http.StatusConflict, tokenActionReply{OK: false, Message: "conflict", Instance: in.ID, Token: st, NowUnix: now.Unix()})
-			return
-		}
-		if err == token.ErrNotHeld {
-			writeJSON(w, http.StatusNotFound, tokenActionReply{OK: false, Message: "not_held", Instance: in.ID, Token: st, NowUnix: now.Unix()})
-			return
-		}
-		writeJSON(w, http.StatusOK, tokenActionReply{OK: true, Message: "ok", Instance: in.ID, Token: st, NowUnix: now.Unix()})
-		return
-
-	case "/token/release":
-		if r.Method != http.MethodPost {
-			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
-			return
-		}
-		var req tokenActionReq
-		if err := decodeJSON(r, &req, 1<<20); err != nil {
-			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "bad json"})
-			return
-		}
-		req.NodeID = strings.TrimSpace(req.NodeID)
-		if req.NodeID == "" {
-			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "node_id required"})
-			return
-		}
-		now := time.Now()
-		st, err := in.TokenRelease(now, req.NodeID)
-		if err == token.ErrConflict {
-			writeJSON(w, http.StatusConflict, tokenActionReply{OK: false, Message: "conflict", Instance: in.ID, Token: st, NowUnix: now.Unix()})
-			return
-		}
-		writeJSON(w, http.StatusOK, tokenActionReply{OK: true, Message: "ok", Instance: in.ID, Token: st, NowUnix: now.Unix()})
-		return
-
-	// ---------------- Queue ----------------
-
-	case "/queue/enqueue":
-		// ZMESH:QUEUE: enqueue is idempotent by event_id (dedupe)
-		if r.Method != http.MethodPost {
-			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
-			return
-		}
-		var it queue.Item
-		if err := decodeJSON(r, &it, 1<<20); err != nil {
-			writeJSON(w, http.StatusBadRequest, queueEnqReply{OK: false, Message: "bad json", Instance: in.ID})
-			return
-		}
-		inserted, err := in.QueueEnqueue(it)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, queueEnqReply{OK: false, Message: err.Error(), Instance: in.ID})
-			return
-		}
-		writeJSON(w, http.StatusOK, queueEnqReply{OK: true, Message: "ok", Instance: in.ID, Inserted: inserted})
-		return
-
-	case "/queue/poll":
-		// ZMESH:QUEUE: lease-based polling supports worker crash recovery
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
-			return
-		}
-		worker := strings.TrimSpace(r.URL.Query().Get("worker"))
-		limit := 64
-		if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
-			n, e := strconv.Atoi(v)
-			if e == nil && n >= 1 && n <= 512 {
-				limit = n
-			}
-		}
-		items, err := in.QueuePoll(worker, limit, time.Now())
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, queuePollReply{OK: false, Message: err.Error(), Instance: in.ID})
-			return
-		}
-		writeJSON(w, http.StatusOK, queuePollReply{OK: true, Message: "ok", Instance: in.ID, Items: items})
-		return
-
-	case "/queue/ack":
-		if r.Method != http.MethodPost {
-			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
-			return
-		}
-		var req queueAckReq
-		if err := decodeJSON(r, &req, 1<<20); err != nil {
-			writeJSON(w, http.StatusBadRequest, queueAckReply{OK: false, Message: "bad json", Instance: in.ID})
-			return
-		}
-		req.EventID = strings.TrimSpace(req.EventID)
-		req.WorkerNodeID = strings.TrimSpace(req.WorkerNodeID)
-		it, err := in.QueueAck(req.EventID, req.WorkerNodeID, req.Message, time.Now())
-		if err == queue.ErrConflict {
-			writeJSON(w, http.StatusConflict, queueAckReply{OK: false, Message: "conflict", Instance: in.ID, Item: it})
-			return
-		}
-		if err != nil {
-			code := http.StatusBadRequest
-			if err == queue.ErrNotFound {
-				code = http.StatusNotFound
-			}
-			writeJSON(w, code, queueAckReply{OK: false, Message: err.Error(), Instance: in.ID, Item: it})
-			return
-		}
-		writeJSON(w, http.StatusOK, queueAckReply{OK: true, Message: "ok", Instance: in.ID, Item: it})
-		return
-
-	default:
-		writeJSON(w, http.StatusNotFound, pingReply{OK: false, Message: "unknown endpoint"})
-		return
+	if _, ok := q.seen[it.EventID]; ok {
+		return false, nil
 	}
+
+	cp := it
+	q.items[it.EventID] = &cp
+	q.order = append(q.order, it.EventID)
+	q.seen[it.EventID] = struct{}{}
+
+	if len(q.order) > q.maxItems {
+		q.pruneLocked()
+	}
+
+	return true, nil
 }
 
-func parsePollQuery(r *http.Request) (after uint64, limit int, err error) {
-	q := r.URL.Query()
-	if v := strings.TrimSpace(q.Get("after")); v != "" {
-		after, err = strconv.ParseUint(v, 10, 64)
-		if err != nil {
-			return 0, 0, errors.New("invalid after")
+// Poll assigns leases to workerNodeID for ready items.
+func (q *Queue) Poll(workerNodeID string, limit int, now time.Time) ([]Item, error) {
+	if workerNodeID == "" {
+		return nil, ErrBadInput
+	}
+	if limit <= 0 || limit > 512 {
+		limit = 64
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	out := make([]Item, 0, limit)
+	nowMs := now.UnixMilli()
+	leaseUntil := now.Add(q.lease).UnixMilli()
+
+	for _, eid := range q.order {
+		if len(out) >= limit {
+			break
+		}
+		it, ok := q.items[eid]
+		if !ok || it.Acked {
+			continue
+		}
+		if it.WorkerNodeID == "" || it.LeaseUntilMs <= nowMs {
+			it.WorkerNodeID = workerNodeID
+			it.LeaseUntilMs = leaseUntil
+			out = append(out, *it)
 		}
 	}
-	limit = 128
-	if v := strings.TrimSpace(q.Get("limit")); v != "" {
-		n, e := strconv.Atoi(v)
-		if e != nil || n < 1 || n > 512 {
-			return 0, 0, errors.New("invalid limit")
-		}
-		limit = n
+
+	return out, nil
+}
+
+func (q *Queue) Ack(eventID, workerNodeID, msg string, now time.Time) (Item, error) {
+	if eventID == "" || workerNodeID == "" {
+		return Item{}, ErrBadInput
 	}
-	return after, limit, nil
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	it, ok := q.items[eventID]
+	if !ok {
+		return Item{}, ErrNotFound
+	}
+
+	nowMs := now.UnixMilli()
+	if it.WorkerNodeID != "" && it.WorkerNodeID != workerNodeID && it.LeaseUntilMs > nowMs && !it.Acked {
+		return *it, ErrConflict
+	}
+
+	it.Acked = true
+	it.AckBy = workerNodeID
+	it.AckMsg = msg
+	it.AckUnixMs = nowMs
+	return *it, nil
 }
 
-func decodeJSON(r *http.Request, dst any, max int64) error {
-	defer r.Body.Close()
-	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, max))
-	dec.DisallowUnknownFields()
-	return dec.Decode(dst)
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+func (q *Queue) pruneLocked() {
+	newOrder := make([]string, 0, len(q.order))
+	for _, eid := range q.order {
+		it, ok := q.items[eid]
+		if !ok {
+			continue
+		}
+		if it.Acked {
+			delete(q.items, eid)
+			continue
+		}
+		newOrder = append(newOrder, eid)
+	}
+	q.order = newOrder
 }
