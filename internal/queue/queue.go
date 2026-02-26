@@ -31,6 +31,8 @@ type Item struct {
 	AckBy     string `json:"ack_by,omitempty"`
 	AckMsg    string `json:"ack_msg,omitempty"`
 	AckUnixMs int64  `json:"ack_unix_ms,omitempty"`
+	
+	TokenEpoch uint64 `json:"token_epoch"` // ZMESH:FENCE: epoch fencing (required for processing)
 }
 
 type Queue struct {
@@ -84,7 +86,15 @@ func (q *Queue) Enqueue(it Item) (bool, error) {
 }
 
 // Poll assigns leases to workerNodeID for ready items.
-func (q *Queue) Poll(workerNodeID string, limit int, now time.Time) ([]Item, error) {
+func (q *Queue) Poll(workerNodeID string, epoch uint64, limit int, now time.Time) ([]Item, error)
+	if it.Acked {
+		continue
+	}
+	// ZMESH:FENCE: only process items for current token epoch
+	if it.TokenEpoch != epoch {
+		continue
+	}
+
 	if workerNodeID == "" {
 		return nil, ErrBadInput
 	}
@@ -117,7 +127,11 @@ func (q *Queue) Poll(workerNodeID string, limit int, now time.Time) ([]Item, err
 	return out, nil
 }
 
-func (q *Queue) Ack(eventID, workerNodeID, msg string, now time.Time) (Item, error) {
+func (q *Queue) Ack(eventID string, epoch uint64, workerNodeID, msg string, now time.Time) (Item, error)
+	if it.TokenEpoch != epoch {
+		return *it, ErrConflict // epoch mismatch treated as conflict/fencing
+	}
+	
 	if eventID == "" || workerNodeID == "" {
 		return Item{}, ErrBadInput
 	}

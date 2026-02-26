@@ -233,12 +233,12 @@ func (in *Instance) QueueEnqueue(it queue.Item) (bool, error) {
 	return inserted, nil
 }
 
-func (in *Instance) QueuePoll(workerNodeID string, limit int, now time.Time) ([]queue.Item, error) {
+func (in *Instance) QueuePoll(workerNodeID string, epoch uint64, limit int, now time.Time) ([]queue.Item, error) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 
 	in.lastAccess = time.Now()
-	items, err := in.q.Poll(workerNodeID, limit, now)
+	items, err := in.q.Poll(workerNodeID, epoch, limit, now)
 	if err == nil && len(items) > 0 {
 		in.seq++
 		in.appendEventLocked(Event{
@@ -252,12 +252,12 @@ func (in *Instance) QueuePoll(workerNodeID string, limit int, now time.Time) ([]
 	return items, err
 }
 
-func (in *Instance) QueueAck(eventID, workerNodeID, msg string, now time.Time) (queue.Item, error) {
+unc (in *Instance) QueueAck(eventID string, epoch uint64, workerNodeID, msg string, now time.Time) (queue.Item, error) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 
 	in.lastAccess = time.Now()
-	it, err := in.q.Ack(eventID, workerNodeID, msg, now)
+    it, err := in.q.Ack(eventID, epoch, workerNodeID, msg, now)
 	if err == nil {
 		in.seq++
 		in.appendEventLocked(Event{
