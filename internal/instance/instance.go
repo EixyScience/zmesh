@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/EixyScience/zmesh/internal/queue"
 	"github.com/EixyScience/zmesh/internal/token"
 )
 
@@ -12,6 +13,7 @@ type EventType string
 const (
 	EventHeartbeat EventType = "heartbeat"
 	EventToken     EventType = "token"
+	EventQueue     EventType = "queue"
 )
 
 type Event struct {
@@ -26,10 +28,15 @@ type Event struct {
 	Role   string `json:"role,omitempty"`
 
 	// Token-related
-	TokenAction    string `json:"token_action,omitempty"`     // claim/renew/release/expire
-	TokenHolder    string `json:"token_holder,omitempty"`     // holder after action (may be empty)
-	TokenEpoch     uint64 `json:"token_epoch,omitempty"`      // epoch after action
-	TokenExpiresMs int64  `json:"token_expires_ms,omitempty"` // unix ms
+	TokenAction    string `json:"token_action,omitempty"`
+	TokenHolder    string `json:"token_holder,omitempty"`
+	TokenEpoch     uint64 `json:"token_epoch,omitempty"`
+	TokenExpiresMs int64  `json:"token_expires_ms,omitempty"`
+
+	// Queue-related
+	QueueAction string `json:"queue_action,omitempty"` // enqueue/poll/ack
+	EventID     string `json:"event_id,omitempty"`
+	Worker      string `json:"worker,omitempty"`
 }
 
 type Instance struct {
@@ -43,6 +50,7 @@ type Instance struct {
 	maxEvents  int
 
 	tok token.State
+	q   *queue.Queue
 }
 
 func New(id string) *Instance {
@@ -51,6 +59,7 @@ func New(id string) *Instance {
 		lastAccess: time.Now(),
 		lastSeen:   make(map[string]time.Time),
 		maxEvents:  4096,
+		q:          queue.New(60 * time.Second),
 	}
 }
 
@@ -90,7 +99,8 @@ func (in *Instance) RecordHeartbeat(from, nodeID, site, role string, ts time.Tim
 	in.appendEventLocked(ev)
 }
 
-// TokenStatus returns current token state, expiring it if needed.
+// ---------------- Token ----------------
+
 func (in *Instance) TokenStatus(now time.Time) token.State {
 	in.mu.Lock()
 	defer in.mu.Unlock()
@@ -100,10 +110,8 @@ func (in *Instance) TokenStatus(now time.Time) token.State {
 	return in.tok
 }
 
-// TokenClaim tries to claim token for nodeID.
-// - If free/expired: issue new token (epoch++).
-// - If already held by nodeID: renew.
-// - If held by others: conflict.
+// ZMESH:TOKEN: per-scalefs lease-based mutual exclusion.
+// ZMESH:EXTEND: replace issuer with distributed consensus when orchestration layer exists.
 func (in *Instance) TokenClaim(now time.Time, nodeID string, lease time.Duration) (token.State, error) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
@@ -167,27 +175,8 @@ func (in *Instance) TokenRelease(now time.Time, nodeID string) (token.State, err
 	return in.tok, nil
 }
 
-func (in *Instance) Poll(afterSeq uint64, limit int) (latest uint64, out []Event) {
-	in.mu.Lock()
-	defer in.mu.Unlock()
-
-	in.lastAccess = time.Now()
-	if limit <= 0 || limit > 512 {
-		limit = 128
-	}
-
-	latest = in.seq
-	for i := 0; i < len(in.events) && len(out) < limit; i++ {
-		if in.events[i].Seq > afterSeq {
-			out = append(out, in.events[i])
-		}
-	}
-	return latest, out
-}
-
 func (in *Instance) expireIfNeededLocked(now time.Time) {
 	if in.tok.HolderNodeID != "" && !now.Before(in.tok.ExpiresAt) {
-		// expire
 		in.tok.HolderNodeID = ""
 		in.tok.IssuedAt = time.Time{}
 		in.tok.ExpiresAt = time.Time{}
@@ -209,6 +198,95 @@ func (in *Instance) recordTokenEventLocked(now time.Time, action string) {
 		ev.TokenExpiresMs = in.tok.ExpiresAt.UnixMilli()
 	}
 	in.appendEventLocked(ev)
+
+	// ZMESH:RECOVERY: token epoch change is a natural point to run reconcile (queue rebuild)
+	// ZMESH:HOOK: governor takeover should query pending changes from all nodes here.
+}
+
+// ---------------- Queue ----------------
+
+// ZMESH:QUEUE:MVP: in-memory queue, rebuildable via reconcile.
+// ZMESH:DEDUP: event_id must be stable across retries.
+func (in *Instance) QueueEnqueue(it queue.Item) (bool, error) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+
+	in.lastAccess = time.Now()
+	inserted, err := in.q.Enqueue(it)
+	if err != nil {
+		return false, err
+	}
+	if inserted {
+		in.seq++
+		in.appendEventLocked(Event{
+			Seq:         in.seq,
+			Type:        EventQueue,
+			TSUnixMs:    time.Now().UnixMilli(),
+			QueueAction: "enqueue",
+			EventID:     it.EventID,
+			NodeID:      it.NodeID,
+		})
+	}
+	return inserted, nil
+}
+
+func (in *Instance) QueuePoll(workerNodeID string, limit int, now time.Time) ([]queue.Item, error) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+
+	in.lastAccess = time.Now()
+	items, err := in.q.Poll(workerNodeID, limit, now)
+	if err == nil && len(items) > 0 {
+		in.seq++
+		in.appendEventLocked(Event{
+			Seq:         in.seq,
+			Type:        EventQueue,
+			TSUnixMs:    now.UnixMilli(),
+			QueueAction: "poll",
+			Worker:      workerNodeID,
+		})
+	}
+	return items, err
+}
+
+func (in *Instance) QueueAck(eventID, workerNodeID, msg string, now time.Time) (queue.Item, error) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+
+	in.lastAccess = time.Now()
+	it, err := in.q.Ack(eventID, workerNodeID, msg, now)
+	if err == nil {
+		in.seq++
+		in.appendEventLocked(Event{
+			Seq:         in.seq,
+			Type:        EventQueue,
+			TSUnixMs:    now.UnixMilli(),
+			QueueAction: "ack",
+			EventID:     eventID,
+			Worker:      workerNodeID,
+		})
+	}
+	return it, err
+}
+
+// ---------------- Poll events ----------------
+
+func (in *Instance) Poll(afterSeq uint64, limit int) (latest uint64, out []Event) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+
+	in.lastAccess = time.Now()
+	if limit <= 0 || limit > 512 {
+		limit = 128
+	}
+
+	latest = in.seq
+	for i := 0; i < len(in.events) && len(out) < limit; i++ {
+		if in.events[i].Seq > afterSeq {
+			out = append(out, in.events[i])
+		}
+	}
+	return latest, out
 }
 
 func (in *Instance) appendEventLocked(ev Event) {
