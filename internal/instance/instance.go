@@ -4,6 +4,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/EixyScience/zmesh/internal/bench"
+	"github.com/EixyScience/zmesh/internal/leadership"
+	"github.com/EixyScience/zmesh/internal/pendingstore"
 	"github.com/EixyScience/zmesh/internal/queue"
 	"github.com/EixyScience/zmesh/internal/token"
 )
@@ -50,25 +53,32 @@ type Instance struct {
 	maxEvents  int
 
 	tok token.State
-	q   *queue.Queue
-	// ZMESH:PENDING:MVP: in-memory pending store (replace with durable journal)
-	pending map[string]queue.Item // event_id -> item (dedupe)
+	// ZMESH:LEADERSHIP: roles share token initially
+	logisticsLeader *leadership.LeaderState
+	benchLeader     *leadership.LeaderState
+
+	q *queue.Queue
 
 	// ZMESH:STATE: injected from agent at instance creation
-	pending *pendingstore.Store
-	bench   *bench.Store
-	nodeID  string // this node id (from config)
+	pendingStore *pendingstore.Store
+	benchStore   *bench.Store
+	nodeID       string
 }
 
 func New(id string) *Instance {
-	return &Instance{
+	in := &Instance{
 		ID:         id,
 		lastAccess: time.Now(),
 		lastSeen:   make(map[string]time.Time),
 		maxEvents:  4096,
 		q:          queue.New(60 * time.Second),
-		pending:    make(map[string]queue.Item, 4096),
 	}
+
+	// ZMESH:LEADERSHIP: both roles use same token initially
+	in.logisticsLeader = leadership.New(leadership.RoleLogistics, &in.tok)
+	in.benchLeader = leadership.New(leadership.RoleBenchmark, &in.tok)
+
+	return in
 }
 
 func (in *Instance) Touch() {
@@ -257,12 +267,12 @@ func (in *Instance) QueuePoll(workerNodeID string, epoch uint64, limit int, now 
 	return items, err
 }
 
-unc (in *Instance) QueueAck(eventID string, epoch uint64, workerNodeID, msg string, now time.Time) (queue.Item, error) {
+func (in *Instance) QueueAck(eventID string, epoch uint64, workerNodeID, msg string, now time.Time) (queue.Item, error) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 
 	in.lastAccess = time.Now()
-    it, err := in.q.Ack(eventID, epoch, workerNodeID, msg, now)
+	it, err := in.q.Ack(eventID, epoch, workerNodeID, msg, now)
 	if err == nil {
 		in.seq++
 		in.appendEventLocked(Event{
@@ -275,44 +285,6 @@ unc (in *Instance) QueueAck(eventID string, epoch uint64, workerNodeID, msg stri
 		})
 	}
 	return it, err
-}
-
-// ZMESH:PENDING: add pending item (idempotent by event_id)
-func (in *Instance) PendingAdd(it queue.Item) (bool, error) {
-	if it.EventID == "" {
-		return false, queue.ErrBadInput
-	}
-
-	in.mu.Lock()
-	defer in.mu.Unlock()
-
-	in.lastAccess = time.Now()
-	if _, ok := in.pending[it.EventID]; ok {
-		return false, nil
-	}
-	in.pending[it.EventID] = it
-	return true, nil
-}
-
-func (in *Instance) PendingList() []queue.Item {
-	in.mu.Lock()
-	defer in.mu.Unlock()
-
-	in.lastAccess = time.Now()
-	out := make([]queue.Item, 0, len(in.pending))
-	for _, v := range in.pending {
-		out = append(out, v)
-	}
-	return out
-}
-
-// ZMESH:PENDING: clear (test hook). Later: clear by event_id or by ack.
-func (in *Instance) PendingClear() {
-	in.mu.Lock()
-	defer in.mu.Unlock()
-
-	in.lastAccess = time.Now()
-	in.pending = make(map[string]queue.Item, 4096)
 }
 
 // ---------------- Poll events ----------------
@@ -340,4 +312,64 @@ func (in *Instance) appendEventLocked(ev Event) {
 	if len(in.events) > in.maxEvents {
 		in.events = in.events[len(in.events)-in.maxEvents:]
 	}
+}
+
+// ---------------- Pending (dirty flag) ----------------
+
+// ZMESH:PENDING:FLAG
+func (in *Instance) NodeID() string {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.nodeID
+}
+
+func (in *Instance) PendingGet(nodeID string) (pendingstore.State, error) {
+	in.mu.Lock()
+	ps := in.pendingStore
+	in.mu.Unlock()
+
+	if ps == nil {
+		return pendingstore.State{Dirty: false}, nil
+	}
+	return ps.Get(in.ID, nodeID)
+}
+
+func (in *Instance) PendingSet(nodeID string, dirty bool, sinceUnixMs int64) error {
+	in.mu.Lock()
+	ps := in.pendingStore
+	in.mu.Unlock()
+
+	if ps == nil {
+		return nil
+	}
+	return ps.Set(in.ID, nodeID, dirty, sinceUnixMs)
+}
+
+func (in *Instance) BenchSnapshot() []bench.Link {
+	in.mu.Lock()
+	bs := in.benchStore
+	in.mu.Unlock()
+	if bs == nil {
+		return nil
+	}
+	return bs.Snapshot()
+}
+
+// ZMESH:STATE: setters (called by agent)
+func (in *Instance) SetStateStores(nodeID string, ps *pendingstore.Store, bs *bench.Store) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	in.nodeID = nodeID
+	in.pendingStore = ps
+	in.benchStore = bs
+}
+
+// ZMESH:LEADERSHIP: accessors
+
+func (in *Instance) LogisticsLeader() *leadership.LeaderState {
+	return in.logisticsLeader
+}
+
+func (in *Instance) BenchmarkLeader() *leadership.LeaderState {
+	return in.benchLeader
 }

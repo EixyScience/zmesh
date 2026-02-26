@@ -31,7 +31,7 @@ type Item struct {
 	AckBy     string `json:"ack_by,omitempty"`
 	AckMsg    string `json:"ack_msg,omitempty"`
 	AckUnixMs int64  `json:"ack_unix_ms,omitempty"`
-	
+
 	TokenEpoch uint64 `json:"token_epoch"` // ZMESH:FENCE: epoch fencing (required for processing)
 }
 
@@ -86,15 +86,7 @@ func (q *Queue) Enqueue(it Item) (bool, error) {
 }
 
 // Poll assigns leases to workerNodeID for ready items.
-func (q *Queue) Poll(workerNodeID string, epoch uint64, limit int, now time.Time) ([]Item, error)
-	if it.Acked {
-		continue
-	}
-	// ZMESH:FENCE: only process items for current token epoch
-	if it.TokenEpoch != epoch {
-		continue
-	}
-
+func (q *Queue) Poll(workerNodeID string, epoch uint64, limit int, now time.Time) ([]Item, error) {
 	if workerNodeID == "" {
 		return nil, ErrBadInput
 	}
@@ -114,9 +106,19 @@ func (q *Queue) Poll(workerNodeID string, epoch uint64, limit int, now time.Time
 			break
 		}
 		it, ok := q.items[eid]
-		if !ok || it.Acked {
+		if !ok {
 			continue
 		}
+		if it.Acked {
+			continue
+		}
+
+		// ZMESH:FENCE: only process items for current token epoch
+		// NOTE: This fencing may be revisited; keep as-is for now.
+		if it.TokenEpoch != epoch {
+			continue
+		}
+
 		if it.WorkerNodeID == "" || it.LeaseUntilMs <= nowMs {
 			it.WorkerNodeID = workerNodeID
 			it.LeaseUntilMs = leaseUntil
@@ -127,11 +129,7 @@ func (q *Queue) Poll(workerNodeID string, epoch uint64, limit int, now time.Time
 	return out, nil
 }
 
-func (q *Queue) Ack(eventID string, epoch uint64, workerNodeID, msg string, now time.Time) (Item, error)
-	if it.TokenEpoch != epoch {
-		return *it, ErrConflict // epoch mismatch treated as conflict/fencing
-	}
-	
+func (q *Queue) Ack(eventID string, epoch uint64, workerNodeID, msg string, now time.Time) (Item, error) {
 	if eventID == "" || workerNodeID == "" {
 		return Item{}, ErrBadInput
 	}
@@ -142,6 +140,11 @@ func (q *Queue) Ack(eventID string, epoch uint64, workerNodeID, msg string, now 
 	it, ok := q.items[eventID]
 	if !ok {
 		return Item{}, ErrNotFound
+	}
+
+	// ZMESH:FENCE: reject ack if epoch mismatched
+	if it.TokenEpoch != epoch {
+		return *it, ErrConflict
 	}
 
 	nowMs := now.UnixMilli()

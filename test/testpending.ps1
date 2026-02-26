@@ -11,6 +11,8 @@ curl.exe -sS -X POST "$BASE/pending/set" -H "Content-Type: application/json" --d
 curl.exe -sS "$BASE/pending/status"
 
 # clear
-@'{"node_id":"node-01"}'@ | Set-Content -Encoding ASCII .\pclr.json
+@'
+{"node_id":"node-01"}
+'@ | Set-Content -Encoding ASCII .\pclr.json
 curl.exe -sS -X POST "$BASE/pending/clear" -H "Content-Type: application/json" --data-binary "@pclr.json"
 curl.exe -sS "$BASE/pending/status"

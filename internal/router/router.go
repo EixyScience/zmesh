@@ -10,9 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/EixyScience/zmesh/internal/bench"
 	"github.com/EixyScience/zmesh/internal/id"
 	"github.com/EixyScience/zmesh/internal/instance"
 	"github.com/EixyScience/zmesh/internal/pending"
+	"github.com/EixyScience/zmesh/internal/preflight"
 	"github.com/EixyScience/zmesh/internal/queue"
 	"github.com/EixyScience/zmesh/internal/reconcile"
 	"github.com/EixyScience/zmesh/internal/token"
@@ -229,6 +231,30 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 
+	case "/preflight/run":
+		// ZMESH:PREFLIGHT:API
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+
+		// Require node_id in body (explicit, avoids ambiguity)
+		var req struct {
+			NodeID string `json:"node_id"`
+		}
+		if err := decodeJSON(r, &req, 1<<20); err != nil {
+			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "bad json"})
+			return
+		}
+		nid := strings.TrimSpace(req.NodeID)
+		if nid == "" {
+			nid = in.NodeID()
+		}
+		pr := preflight.New()
+		res := pr.Run(in.ID, nid)
+		writeJSON(w, http.StatusOK, res)
+		return
+
 	// ---------------- Token ----------------
 
 	case "/token/status":
@@ -320,8 +346,6 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 	// ---------------- Queue ----------------
 
 	case "/queue/enqueue":
-		now := time.Now()
-		st := in.TokenStatus(now)
 		// ZMESH:QUEUE: enqueue is idempotent by event_id (dedupe)
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
@@ -354,7 +378,9 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 				limit = n
 			}
 		}
-		items, err := in.QueuePoll(worker, limit, time.Now())
+		now := time.Now()
+		epoch := in.TokenStatus(now).Epoch
+		items, err := in.QueuePoll(worker, epoch, limit, now)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, queuePollReply{OK: false, Message: err.Error(), Instance: in.ID})
 			return
@@ -374,7 +400,9 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 		}
 		req.EventID = strings.TrimSpace(req.EventID)
 		req.WorkerNodeID = strings.TrimSpace(req.WorkerNodeID)
-		it, err := in.QueueAck(req.EventID, req.WorkerNodeID, req.Message, time.Now())
+		now := time.Now()
+		epoch := in.TokenStatus(now).Epoch
+		it, err := in.QueueAck(req.EventID, epoch, req.WorkerNodeID, req.Message, now)
 		if err == queue.ErrConflict {
 			writeJSON(w, http.StatusConflict, queueAckReply{OK: false, Message: "conflict", Instance: in.ID, Item: it})
 			return
@@ -395,17 +423,25 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
 			return
 		}
-		items := in.PendingList()
 
-		// convert queue.Item -> pending.Item
-		out := make([]pending.Item, 0, len(items))
-		for _, it := range items {
+		// ZMESH:PENDING:COMPAT
+		// Compatibility endpoint for reconcile client.
+		// We expose dirty-flag as a single synthetic pending item when Dirty==true.
+		nid := in.NodeID()
+		st, err := in.PendingGet(nid)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, pingReply{OK: false, Message: err.Error()})
+			return
+		}
+
+		out := make([]pending.Item, 0, 1)
+		if st.Dirty {
 			out = append(out, pending.Item{
-				EventID:  it.EventID,
-				NodeID:   it.NodeID,
-				TSUnixMs: it.TSUnixMs,
-				Kind:     it.Kind,
-				Summary:  it.Summary,
+				EventID:  "dirty:" + nid, // stable dedupe key
+				NodeID:   nid,
+				TSUnixMs: st.DirtySinceUnixMs,
+				Kind:     "dirty",
+				Summary:  "dirty flag set",
 			})
 		}
 
@@ -418,21 +454,39 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "/pending/add":
-		// ZMESH:PENDING:MVP: manual injection (used by sensors later)
+		// ZMESH:PENDING:COMPAT
+		// Compatibility endpoint: treat any add as "set dirty".
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
 			return
 		}
+
 		var it queue.Item
 		if err := decodeJSON(r, &it, 1<<20); err != nil {
 			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "bad json"})
 			return
 		}
-		inserted, err := in.PendingAdd(it)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: err.Error()})
+
+		// Decide which node this pending refers to.
+		nid := strings.TrimSpace(it.NodeID)
+		if nid == "" {
+			nid = in.NodeID()
+		}
+
+		// Determine "inserted" as transition false->true
+		prev, _ := in.PendingGet(nid)
+		inserted := !prev.Dirty
+
+		since := it.TSUnixMs
+		if since == 0 {
+			since = time.Now().UnixMilli()
+		}
+
+		if err := in.PendingSet(nid, true, since); err != nil {
+			writeJSON(w, http.StatusInternalServerError, pingReply{OK: false, Message: err.Error()})
 			return
 		}
+
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":       true,
 			"message":  "ok",
@@ -589,6 +643,53 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": true, "message": "ok", "instance": in.ID,
 			"links": in.BenchSnapshot(), // 追加メソッド
+		})
+		return
+
+	case "/leader/status":
+		now := time.Now()
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":       true,
+			"instance": in.ID,
+
+			"logistics": map[string]any{
+				"holder": in.LogisticsLeader().Holder(now),
+				"epoch":  in.LogisticsLeader().Epoch(),
+			},
+
+			"benchmark": map[string]any{
+				"holder": in.BenchmarkLeader().Holder(now),
+				"epoch":  in.BenchmarkLeader().Epoch(),
+			},
+		})
+		return
+
+	case "/bench/activeset":
+		// ZMESH:ACTIVESET:API
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+
+		// window seconds, default 90
+		winSec := 90
+		if v := strings.TrimSpace(r.URL.Query().Get("window")); v != "" {
+			if n, e := strconv.Atoi(v); e == nil && n >= 5 && n <= 3600 {
+				winSec = n
+			}
+		}
+
+		now := time.Now()
+		nodes := in.ActiveNodes(now, time.Duration(winSec)*time.Second)
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":       true,
+			"message":  "ok",
+			"instance": in.ID,
+			"window_s": winSec,
+			"active":   nodes,
+			"quorum":   bench.Quorum(len(nodes)),
 		})
 		return
 
