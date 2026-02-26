@@ -62,6 +62,58 @@ func (a *Agent) Run() error {
 			Peers:       a.cfg.WAN.Peers,
 			RegistryTTL: 10 * time.Minute, // lazy instances expire if unused
 		}
+		// ZMESH:TOKEN: automatic claim/renew loop
+		// ZMESH:EXTEND: replace with distributed consensus when orchestration layer is implemented
+		if httpx != nil {
+
+			go func() {
+
+				base := ""
+				if len(a.cfg.WAN.Peers) > 0 {
+					base = a.cfg.WAN.Peers[0]
+				}
+
+				if base == "" {
+					fmt.Println("[token] no WAN peer configured; skipping auto-claim")
+					return
+				}
+
+				nodeID := a.cfg.Node.ID
+
+				for {
+
+					select {
+					case <-ctx.Done():
+						// ZMESH:TOKEN: release on shutdown (best effort)
+						_, _ = httpx.TokenRelease(base, instanceID, nodeID, 2*time.Second)
+						return
+
+					default:
+
+						// ZMESH:TOKEN: claim or renew
+						st, err := httpx.TokenClaim(base, instanceID, nodeID, 2*time.Second)
+
+						if err != nil {
+
+							// ZMESH:TOKEN: conflict or unreachable
+							// ZMESH:EXTEND: add exponential backoff and alternate governor selection
+
+							time.Sleep(5 * time.Second)
+							continue
+						}
+
+						fmt.Printf("[token] holder=%s epoch=%d expires=%s\n",
+							st.HolderNodeID,
+							st.Epoch,
+							st.ExpiresAt.Format(time.RFC3339))
+
+						// ZMESH:TOKEN: renew interval (lease=30s → renew every 10s)
+						time.Sleep(10 * time.Second)
+					}
+				}
+			}()
+		}
+
 		go func() {
 			_ = httpx.Serve(ctx)
 		}()

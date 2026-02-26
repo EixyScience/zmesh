@@ -45,6 +45,23 @@ func (h *HTTP) Serve(ctx context.Context) error {
 	return srv.Serve(ln)
 }
 
+// ZMESH:TOKEN: HTTP client for token operations
+
+type TokenState struct {
+	HolderNodeID string    `json:"holder_node_id"`
+	IssuedAt     time.Time `json:"issued_at"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	Epoch        uint64    `json:"epoch"`
+}
+
+type tokenReply struct {
+	OK       bool       `json:"ok"`
+	Message  string     `json:"message"`
+	Instance string     `json:"instance"`
+	Token    TokenState `json:"token"`
+	NowUnix  int64      `json:"now_unix"`
+}
+
 func (h *HTTP) Ping(baseURL string, timeout time.Duration) (bool, string, error) {
 	c := &http.Client{Timeout: timeout}
 	resp, err := c.Get(baseURL + "/ping")
@@ -75,4 +92,55 @@ func (h *HTTP) SendHeartbeat(instanceID string, hb Heartbeat, timeout time.Durat
 		req.Header.Set("Content-Type", "application/json")
 		_, _ = c.Do(req)
 	}
+}
+
+// ZMESH:TOKEN: Claim token for scalefs instance
+func (h *HTTP) TokenClaim(baseURL, instanceID, nodeID string, timeout time.Duration) (TokenState, error) {
+	return h.tokenPost(baseURL, instanceID, "claim", nodeID, timeout)
+}
+
+// ZMESH:TOKEN: Renew token lease
+func (h *HTTP) TokenRenew(baseURL, instanceID, nodeID string, timeout time.Duration) (TokenState, error) {
+	return h.tokenPost(baseURL, instanceID, "renew", nodeID, timeout)
+}
+
+// ZMESH:TOKEN: Release token lease
+func (h *HTTP) TokenRelease(baseURL, instanceID, nodeID string, timeout time.Duration) (TokenState, error) {
+	return h.tokenPost(baseURL, instanceID, "release", nodeID, timeout)
+}
+
+func (h *HTTP) tokenPost(baseURL, instanceID, action, nodeID string, timeout time.Duration) (TokenState, error) {
+
+	url := fmt.Sprintf("%s/i/%s/token/%s", baseURL, instanceID, action)
+
+	reqBody := map[string]string{"node_id": nodeID}
+	b, _ := json.Marshal(reqBody)
+
+	c := &http.Client{Timeout: timeout}
+
+	req, err := http.NewRequest("POST", url, bytes.NewReader(b))
+	if err != nil {
+		return TokenState{}, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.Do(req)
+	if err != nil {
+		return TokenState{}, err
+	}
+	defer resp.Body.Close()
+
+	var reply tokenReply
+
+	err = json.NewDecoder(resp.Body).Decode(&reply)
+	if err != nil {
+		return TokenState{}, err
+	}
+
+	if !reply.OK {
+		return reply.Token, fmt.Errorf("token %s failed: %s", action, reply.Message)
+	}
+
+	return reply.Token, nil
 }
