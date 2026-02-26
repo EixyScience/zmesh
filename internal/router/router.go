@@ -12,6 +12,7 @@ import (
 
 	"github.com/EixyScience/zmesh/internal/id"
 	"github.com/EixyScience/zmesh/internal/instance"
+	"github.com/EixyScience/zmesh/internal/token"
 )
 
 type Registry struct {
@@ -22,12 +23,11 @@ type Registry struct {
 }
 
 func NewRegistry(ttl time.Duration) *Registry {
-	r := &Registry{
+	return &Registry{
 		items:    make(map[string]*instance.Instance),
 		ttl:      ttl,
 		janitorI: 30 * time.Second,
 	}
-	return r
 }
 
 func (r *Registry) GetOrCreate(instanceID string) (*instance.Instance, error) {
@@ -76,10 +76,16 @@ func (r *Registry) sweep() {
 
 type Router struct {
 	reg *Registry
+
+	// Token lease settings (MVP defaults)
+	tokenLease time.Duration
 }
 
 func New(reg *Registry) *Router {
-	return &Router{reg: reg}
+	return &Router{
+		reg:        reg,
+		tokenLease: 30 * time.Second,
+	}
 }
 
 type pingReply struct {
@@ -101,25 +107,38 @@ type pollReply struct {
 	Instance string           `json:"instance"`
 }
 
+type tokenStatusReply struct {
+	OK       bool        `json:"ok"`
+	Instance string      `json:"instance"`
+	Token    token.State `json:"token"`
+	NowUnix  int64       `json:"now_unix"`
+}
+
+type tokenActionReq struct {
+	NodeID string `json:"node_id"`
+}
+
+type tokenActionReply struct {
+	OK       bool        `json:"ok"`
+	Message  string      `json:"message"`
+	Instance string      `json:"instance"`
+	Token    token.State `json:"token"`
+	NowUnix  int64       `json:"now_unix"`
+}
+
 func (rt *Router) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// global health
 	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, pingReply{OK: true, Message: "pong"})
 	})
 
-	// instance-scoped endpoints:
-	// /i/{uuid7}/ping
-	// /i/{uuid7}/hb
-	// /i/{uuid7}/poll?after=<seq>&limit=<n>
 	mux.HandleFunc("/i/", rt.dispatch)
 
 	return mux
 }
 
 func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
-	// path: /i/{id}/...
 	rest := strings.TrimPrefix(r.URL.Path, "/i/")
 	parts := strings.SplitN(rest, "/", 2)
 	if len(parts) != 2 {
@@ -139,6 +158,7 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 	case "/ping":
 		writeJSON(w, http.StatusOK, pingReply{OK: true, Message: "pong"})
 		return
+
 	case "/hb":
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
@@ -153,6 +173,7 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 		in.RecordHeartbeat(r.RemoteAddr, req.NodeID, req.Site, req.Role, ts)
 		writeJSON(w, http.StatusOK, pingReply{OK: true, Message: "ok"})
 		return
+
 	case "/poll":
 		if r.Method != http.MethodGet {
 			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
@@ -171,6 +192,140 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 			Instance: in.ID,
 		})
 		return
+
+	case "/token/status":
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+		now := time.Now()
+		st := in.TokenStatus(now)
+		writeJSON(w, http.StatusOK, tokenStatusReply{
+			OK:       true,
+			Instance: in.ID,
+			Token:    st,
+			NowUnix:  now.Unix(),
+		})
+		return
+
+	case "/token/claim":
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+		var req tokenActionReq
+		if err := decodeJSON(r, &req, 1<<20); err != nil {
+			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "bad json"})
+			return
+		}
+		req.NodeID = strings.TrimSpace(req.NodeID)
+		if req.NodeID == "" {
+			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "node_id required"})
+			return
+		}
+		now := time.Now()
+		st, err := in.TokenClaim(now, req.NodeID, rt.tokenLease)
+		if err == token.ErrConflict {
+			writeJSON(w, http.StatusConflict, tokenActionReply{
+				OK:       false,
+				Message:  "conflict",
+				Instance: in.ID,
+				Token:    st,
+				NowUnix:  now.Unix(),
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, tokenActionReply{
+			OK:       true,
+			Message:  "ok",
+			Instance: in.ID,
+			Token:    st,
+			NowUnix:  now.Unix(),
+		})
+		return
+
+	case "/token/renew":
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+		var req tokenActionReq
+		if err := decodeJSON(r, &req, 1<<20); err != nil {
+			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "bad json"})
+			return
+		}
+		req.NodeID = strings.TrimSpace(req.NodeID)
+		if req.NodeID == "" {
+			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "node_id required"})
+			return
+		}
+		now := time.Now()
+		st, err := in.TokenRenew(now, req.NodeID, rt.tokenLease)
+		if err == token.ErrConflict {
+			writeJSON(w, http.StatusConflict, tokenActionReply{
+				OK:       false,
+				Message:  "conflict",
+				Instance: in.ID,
+				Token:    st,
+				NowUnix:  now.Unix(),
+			})
+			return
+		}
+		if err == token.ErrNotHeld {
+			writeJSON(w, http.StatusNotFound, tokenActionReply{
+				OK:       false,
+				Message:  "not_held",
+				Instance: in.ID,
+				Token:    st,
+				NowUnix:  now.Unix(),
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, tokenActionReply{
+			OK:       true,
+			Message:  "ok",
+			Instance: in.ID,
+			Token:    st,
+			NowUnix:  now.Unix(),
+		})
+		return
+
+	case "/token/release":
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+		var req tokenActionReq
+		if err := decodeJSON(r, &req, 1<<20); err != nil {
+			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "bad json"})
+			return
+		}
+		req.NodeID = strings.TrimSpace(req.NodeID)
+		if req.NodeID == "" {
+			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "node_id required"})
+			return
+		}
+		now := time.Now()
+		st, err := in.TokenRelease(now, req.NodeID)
+		if err == token.ErrConflict {
+			writeJSON(w, http.StatusConflict, tokenActionReply{
+				OK:       false,
+				Message:  "conflict",
+				Instance: in.ID,
+				Token:    st,
+				NowUnix:  now.Unix(),
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, tokenActionReply{
+			OK:       true,
+			Message:  "ok",
+			Instance: in.ID,
+			Token:    st,
+			NowUnix:  now.Unix(),
+		})
+		return
+
 	default:
 		writeJSON(w, http.StatusNotFound, pingReply{OK: false, Message: "unknown endpoint"})
 		return
