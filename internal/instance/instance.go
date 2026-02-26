@@ -51,6 +51,8 @@ type Instance struct {
 
 	tok token.State
 	q   *queue.Queue
+	// ZMESH:PENDING:MVP: in-memory pending store (replace with durable journal)
+	pending map[string]queue.Item // event_id -> item (dedupe)
 }
 
 func New(id string) *Instance {
@@ -60,6 +62,7 @@ func New(id string) *Instance {
 		lastSeen:   make(map[string]time.Time),
 		maxEvents:  4096,
 		q:          queue.New(60 * time.Second),
+		pending:    make(map[string]queue.Item, 4096),
 	}
 }
 
@@ -267,6 +270,44 @@ func (in *Instance) QueueAck(eventID, workerNodeID, msg string, now time.Time) (
 		})
 	}
 	return it, err
+}
+
+// ZMESH:PENDING: add pending item (idempotent by event_id)
+func (in *Instance) PendingAdd(it queue.Item) (bool, error) {
+	if it.EventID == "" {
+		return false, queue.ErrBadInput
+	}
+
+	in.mu.Lock()
+	defer in.mu.Unlock()
+
+	in.lastAccess = time.Now()
+	if _, ok := in.pending[it.EventID]; ok {
+		return false, nil
+	}
+	in.pending[it.EventID] = it
+	return true, nil
+}
+
+func (in *Instance) PendingList() []queue.Item {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+
+	in.lastAccess = time.Now()
+	out := make([]queue.Item, 0, len(in.pending))
+	for _, v := range in.pending {
+		out = append(out, v)
+	}
+	return out
+}
+
+// ZMESH:PENDING: clear (test hook). Later: clear by event_id or by ack.
+func (in *Instance) PendingClear() {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+
+	in.lastAccess = time.Now()
+	in.pending = make(map[string]queue.Item, 4096)
 }
 
 // ---------------- Poll events ----------------

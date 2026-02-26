@@ -389,17 +389,67 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "/pending":
-		// ZMESH:PENDING:MVP: return empty until local journal is wired.
-		// ZMESH:EXTEND: return durable local change log (unsent items).
 		if r.Method != http.MethodGet {
 			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
 			return
 		}
+		items := in.PendingList()
+
+		// convert queue.Item -> pending.Item
+		out := make([]pending.Item, 0, len(items))
+		for _, it := range items {
+			out = append(out, pending.Item{
+				EventID:  it.EventID,
+				NodeID:   it.NodeID,
+				TSUnixMs: it.TSUnixMs,
+				Kind:     it.Kind,
+				Summary:  it.Summary,
+			})
+		}
+
 		writeJSON(w, http.StatusOK, pending.Reply{
 			OK:       true,
 			Message:  "ok",
 			Instance: in.ID,
-			Items:    []pending.Item{},
+			Items:    out,
+		})
+		return
+
+	case "/pending/add":
+		// ZMESH:PENDING:MVP: manual injection (used by sensors later)
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+		var it queue.Item
+		if err := decodeJSON(r, &it, 1<<20); err != nil {
+			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: "bad json"})
+			return
+		}
+		inserted, err := in.PendingAdd(it)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, pingReply{OK: false, Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":       true,
+			"message":  "ok",
+			"instance": in.ID,
+			"inserted": inserted,
+		})
+		return
+
+	case "/pending/clear":
+		// ZMESH:TEST: clear pending (later restrict by token holder / auth)
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+		in.PendingClear()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":       true,
+			"message":  "ok",
+			"instance": in.ID,
 		})
 		return
 
