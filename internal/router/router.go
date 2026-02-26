@@ -12,6 +12,9 @@ import (
 
 	"github.com/EixyScience/zmesh/internal/id"
 	"github.com/EixyScience/zmesh/internal/instance"
+	"github.com/EixyScience/zmesh/internal/pending"
+	"github.com/EixyScience/zmesh/internal/queue"
+	"github.com/EixyScience/zmesh/internal/reconcile"
 	"github.com/EixyScience/zmesh/internal/token"
 )
 
@@ -20,6 +23,16 @@ type Registry struct {
 	items    map[string]*instance.Instance
 	ttl      time.Duration
 	janitorI time.Duration
+}
+
+type reconcileReply struct {
+	OK       bool   `json:"ok"`
+	Message  string `json:"message"`
+	Instance string `json:"instance"`
+
+	Peers       []string `json:"peers"`
+	PulledItems int      `json:"pulled_items"`
+	EnqueuedNew int      `json:"enqueued_new"`
 }
 
 func NewRegistry(ttl time.Duration) *Registry {
@@ -34,7 +47,6 @@ func (r *Registry) GetOrCreate(instanceID string) (*instance.Instance, error) {
 	if err := id.ValidateUUID(instanceID); err != nil {
 		return nil, err
 	}
-
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -77,7 +89,6 @@ func (r *Registry) sweep() {
 type Router struct {
 	reg *Registry
 
-	// Token lease settings (MVP defaults)
 	tokenLease time.Duration
 }
 
@@ -97,7 +108,7 @@ type hbReq struct {
 	NodeID string `json:"node_id"`
 	Site   string `json:"site"`
 	Role   string `json:"role"`
-	TSUnix int64  `json:"ts_unix"` // seconds
+	TSUnix int64  `json:"ts_unix"`
 }
 
 type pollReply struct {
@@ -126,15 +137,39 @@ type tokenActionReply struct {
 	NowUnix  int64       `json:"now_unix"`
 }
 
+type queueEnqReply struct {
+	OK       bool   `json:"ok"`
+	Message  string `json:"message"`
+	Instance string `json:"instance"`
+	Inserted bool   `json:"inserted"`
+}
+
+type queuePollReply struct {
+	OK       bool         `json:"ok"`
+	Message  string       `json:"message"`
+	Instance string       `json:"instance"`
+	Items    []queue.Item `json:"items"`
+}
+
+type queueAckReq struct {
+	EventID      string `json:"event_id"`
+	WorkerNodeID string `json:"worker_node_id"`
+	Message      string `json:"message"`
+}
+
+type queueAckReply struct {
+	OK       bool       `json:"ok"`
+	Message  string     `json:"message"`
+	Instance string     `json:"instance"`
+	Item     queue.Item `json:"item"`
+}
+
 func (rt *Router) Handler() http.Handler {
 	mux := http.NewServeMux()
-
 	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, pingReply{OK: true, Message: "pong"})
 	})
-
 	mux.HandleFunc("/i/", rt.dispatch)
-
 	return mux
 }
 
@@ -155,6 +190,7 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch action {
+
 	case "/ping":
 		writeJSON(w, http.StatusOK, pingReply{OK: true, Message: "pong"})
 		return
@@ -193,6 +229,8 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 
+	// ---------------- Token ----------------
+
 	case "/token/status":
 		if r.Method != http.MethodGet {
 			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
@@ -200,12 +238,7 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 		}
 		now := time.Now()
 		st := in.TokenStatus(now)
-		writeJSON(w, http.StatusOK, tokenStatusReply{
-			OK:       true,
-			Instance: in.ID,
-			Token:    st,
-			NowUnix:  now.Unix(),
-		})
+		writeJSON(w, http.StatusOK, tokenStatusReply{OK: true, Instance: in.ID, Token: st, NowUnix: now.Unix()})
 		return
 
 	case "/token/claim":
@@ -226,22 +259,10 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()
 		st, err := in.TokenClaim(now, req.NodeID, rt.tokenLease)
 		if err == token.ErrConflict {
-			writeJSON(w, http.StatusConflict, tokenActionReply{
-				OK:       false,
-				Message:  "conflict",
-				Instance: in.ID,
-				Token:    st,
-				NowUnix:  now.Unix(),
-			})
+			writeJSON(w, http.StatusConflict, tokenActionReply{OK: false, Message: "conflict", Instance: in.ID, Token: st, NowUnix: now.Unix()})
 			return
 		}
-		writeJSON(w, http.StatusOK, tokenActionReply{
-			OK:       true,
-			Message:  "ok",
-			Instance: in.ID,
-			Token:    st,
-			NowUnix:  now.Unix(),
-		})
+		writeJSON(w, http.StatusOK, tokenActionReply{OK: true, Message: "ok", Instance: in.ID, Token: st, NowUnix: now.Unix()})
 		return
 
 	case "/token/renew":
@@ -262,32 +283,14 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()
 		st, err := in.TokenRenew(now, req.NodeID, rt.tokenLease)
 		if err == token.ErrConflict {
-			writeJSON(w, http.StatusConflict, tokenActionReply{
-				OK:       false,
-				Message:  "conflict",
-				Instance: in.ID,
-				Token:    st,
-				NowUnix:  now.Unix(),
-			})
+			writeJSON(w, http.StatusConflict, tokenActionReply{OK: false, Message: "conflict", Instance: in.ID, Token: st, NowUnix: now.Unix()})
 			return
 		}
 		if err == token.ErrNotHeld {
-			writeJSON(w, http.StatusNotFound, tokenActionReply{
-				OK:       false,
-				Message:  "not_held",
-				Instance: in.ID,
-				Token:    st,
-				NowUnix:  now.Unix(),
-			})
+			writeJSON(w, http.StatusNotFound, tokenActionReply{OK: false, Message: "not_held", Instance: in.ID, Token: st, NowUnix: now.Unix()})
 			return
 		}
-		writeJSON(w, http.StatusOK, tokenActionReply{
-			OK:       true,
-			Message:  "ok",
-			Instance: in.ID,
-			Token:    st,
-			NowUnix:  now.Unix(),
-		})
+		writeJSON(w, http.StatusOK, tokenActionReply{OK: true, Message: "ok", Instance: in.ID, Token: st, NowUnix: now.Unix()})
 		return
 
 	case "/token/release":
@@ -308,21 +311,155 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()
 		st, err := in.TokenRelease(now, req.NodeID)
 		if err == token.ErrConflict {
-			writeJSON(w, http.StatusConflict, tokenActionReply{
-				OK:       false,
-				Message:  "conflict",
-				Instance: in.ID,
-				Token:    st,
-				NowUnix:  now.Unix(),
-			})
+			writeJSON(w, http.StatusConflict, tokenActionReply{OK: false, Message: "conflict", Instance: in.ID, Token: st, NowUnix: now.Unix()})
 			return
 		}
-		writeJSON(w, http.StatusOK, tokenActionReply{
+		writeJSON(w, http.StatusOK, tokenActionReply{OK: true, Message: "ok", Instance: in.ID, Token: st, NowUnix: now.Unix()})
+		return
+
+	// ---------------- Queue ----------------
+
+	case "/queue/enqueue":
+		// ZMESH:QUEUE: enqueue is idempotent by event_id (dedupe)
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+		var it queue.Item
+		if err := decodeJSON(r, &it, 1<<20); err != nil {
+			writeJSON(w, http.StatusBadRequest, queueEnqReply{OK: false, Message: "bad json", Instance: in.ID})
+			return
+		}
+		inserted, err := in.QueueEnqueue(it)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, queueEnqReply{OK: false, Message: err.Error(), Instance: in.ID})
+			return
+		}
+		writeJSON(w, http.StatusOK, queueEnqReply{OK: true, Message: "ok", Instance: in.ID, Inserted: inserted})
+		return
+
+	case "/queue/poll":
+		// ZMESH:QUEUE: lease-based polling supports worker crash recovery
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+		worker := strings.TrimSpace(r.URL.Query().Get("worker"))
+		limit := 64
+		if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+			n, e := strconv.Atoi(v)
+			if e == nil && n >= 1 && n <= 512 {
+				limit = n
+			}
+		}
+		items, err := in.QueuePoll(worker, limit, time.Now())
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, queuePollReply{OK: false, Message: err.Error(), Instance: in.ID})
+			return
+		}
+		writeJSON(w, http.StatusOK, queuePollReply{OK: true, Message: "ok", Instance: in.ID, Items: items})
+		return
+
+	case "/queue/ack":
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+		var req queueAckReq
+		if err := decodeJSON(r, &req, 1<<20); err != nil {
+			writeJSON(w, http.StatusBadRequest, queueAckReply{OK: false, Message: "bad json", Instance: in.ID})
+			return
+		}
+		req.EventID = strings.TrimSpace(req.EventID)
+		req.WorkerNodeID = strings.TrimSpace(req.WorkerNodeID)
+		it, err := in.QueueAck(req.EventID, req.WorkerNodeID, req.Message, time.Now())
+		if err == queue.ErrConflict {
+			writeJSON(w, http.StatusConflict, queueAckReply{OK: false, Message: "conflict", Instance: in.ID, Item: it})
+			return
+		}
+		if err != nil {
+			code := http.StatusBadRequest
+			if err == queue.ErrNotFound {
+				code = http.StatusNotFound
+			}
+			writeJSON(w, code, queueAckReply{OK: false, Message: err.Error(), Instance: in.ID, Item: it})
+			return
+		}
+		writeJSON(w, http.StatusOK, queueAckReply{OK: true, Message: "ok", Instance: in.ID, Item: it})
+		return
+
+	case "/pending":
+		// ZMESH:PENDING:MVP: return empty until local journal is wired.
+		// ZMESH:EXTEND: return durable local change log (unsent items).
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, pending.Reply{
 			OK:       true,
 			Message:  "ok",
 			Instance: in.ID,
-			Token:    st,
-			NowUnix:  now.Unix(),
+			Items:    []pending.Item{},
+		})
+		return
+
+	case "/reconcile/run":
+		// ZMESH:RECOVERY: called after (re)appointment of Logistics Chief.
+		// ZMESH:SEC: later restrict to token holder / governor role.
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, pingReply{OK: false, Message: "method not allowed"})
+			return
+		}
+
+		peers := r.URL.Query()["peer"]
+		if len(peers) == 0 {
+			writeJSON(w, http.StatusBadRequest, reconcileReply{
+				OK:       false,
+				Message:  "peer query required",
+				Instance: in.ID,
+			})
+			return
+		}
+
+		// derive this server base URL
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		selfBase := scheme + "://" + r.Host
+
+		rc := reconcile.NewClient()
+
+		pulled := 0
+		enqNew := 0
+
+		for _, p := range peers {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			items, err := rc.PullPending(p, in.ID)
+			if err != nil {
+				// best effort: skip peer
+				continue
+			}
+			pulled += len(items)
+
+			for _, it := range items {
+				inserted, err := rc.EnqueueToGovernor(selfBase, in.ID, it)
+				if err == nil && inserted {
+					enqNew++
+				}
+			}
+		}
+
+		writeJSON(w, http.StatusOK, reconcileReply{
+			OK:          true,
+			Message:     "ok",
+			Instance:    in.ID,
+			Peers:       peers,
+			PulledItems: pulled,
+			EnqueuedNew: enqNew,
 		})
 		return
 
