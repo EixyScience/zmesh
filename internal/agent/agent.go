@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -16,6 +17,18 @@ import (
 
 type Agent struct{ cfg *config.Config }
 
+// tools
+func absFrom(baseDir, p string) string {
+	if p == "" {
+		return ""
+	}
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p)
+	}
+	return filepath.Clean(filepath.Join(baseDir, p))
+}
+
+// main functions
 func New(cfg *config.Config) *Agent { return &Agent{cfg: cfg} }
 
 func (a *Agent) Run() error {

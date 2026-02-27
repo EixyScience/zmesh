@@ -25,6 +25,8 @@ type Registry struct {
 	items    map[string]*instance.Instance
 	ttl      time.Duration
 	janitorI time.Duration
+	// ZMESH:PATHS: defaults injected by agent at startup (absolute)
+	defaultPaths instance.Paths
 }
 
 type reconcileReply struct {
@@ -37,11 +39,12 @@ type reconcileReply struct {
 	EnqueuedNew int      `json:"enqueued_new"`
 }
 
-func NewRegistry(ttl time.Duration) *Registry {
+func NewRegistry(ttl time.Duration, defaults instance.Paths) *Registry {
 	return &Registry{
-		items:    make(map[string]*instance.Instance),
-		ttl:      ttl,
-		janitorI: 30 * time.Second,
+		items:        make(map[string]*instance.Instance),
+		ttl:          ttl,
+		janitorI:     30 * time.Second,
+		defaultPaths: defaults,
 	}
 }
 
@@ -57,6 +60,7 @@ func (r *Registry) GetOrCreate(instanceID string) (*instance.Instance, error) {
 		return in, nil
 	}
 	in := instance.New(instanceID)
+	in.SetPaths(r.defaultPaths)
 	r.items[instanceID] = in
 	return in, nil
 }
@@ -239,6 +243,7 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// body: node_id
+		// node_id (body) を必須にするのが安全
 		var req struct {
 			NodeID string `json:"node_id"`
 		}
@@ -251,12 +256,19 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 			nid = in.NodeID()
 		}
 
+		// query > config > default の優先順
 		mainRoot := strings.TrimSpace(r.URL.Query().Get("main"))
+		if mainRoot == "" {
+			mainRoot = in.Paths().WatchRoot // ★ config由来（絶対パスにしておく）
+		}
 		if mainRoot == "" {
 			mainRoot = "./main"
 		}
 
 		stateDir := strings.TrimSpace(r.URL.Query().Get("state"))
+		if stateDir == "" {
+			stateDir = in.Paths().StateDir // ★ config由来（絶対パスにしておく）
+		}
 		if stateDir == "" {
 			stateDir = "./zmesh.state"
 		}

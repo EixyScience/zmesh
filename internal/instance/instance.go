@@ -59,10 +59,13 @@ type Instance struct {
 
 	q *queue.Queue
 
-	// ZMESH:STATE: injected from agent at instance creation
-	pendingStore *pendingstore.Store
-	benchStore   *bench.Store
-	nodeID       string
+	// ZMESH:PATHS: injected from agent config; must be absolute
+	paths Paths
+
+	// existing injected state:
+	// pending *pendingstore.Store
+	// bench   *bench.Store
+	nodeID string
 }
 
 func New(id string) *Instance {
@@ -372,4 +375,16 @@ func (in *Instance) LogisticsLeader() *leadership.LeaderState {
 
 func (in *Instance) BenchmarkLeader() *leadership.LeaderState {
 	return in.benchLeader
+}
+
+func (in *Instance) SetPaths(p Paths) {
+	in.mu.Lock()
+	in.paths = p
+	in.mu.Unlock()
+}
+
+func (in *Instance) Paths() Paths {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.paths
 }
