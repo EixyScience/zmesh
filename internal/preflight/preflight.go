@@ -12,15 +12,12 @@ import (
 // The goal is to ensure we don't lose local changes made before zmesh start.
 
 type Result struct {
-	OK      bool   `json:"ok"`
-	Message string `json:"message"`
+	OK        bool   `json:"ok"`
+	Message   string `json:"message"`
+	Instance  string `json:"instance"`
+	NodeID    string `json:"node_id"`
+	NowUnixMs int64  `json:"now_unix_ms"`
 
-	Instance string `json:"instance"`
-	NodeID   string `json:"node_id"`
-
-	NowUnixMs int64 `json:"now_unix_ms"`
-
-	// Hooks / future metrics
 	MainChecked     bool `json:"main_checked"`
 	ShadowPrepared  bool `json:"shadow_prepared"`
 	JournalPrepared bool `json:"journal_prepared"`
@@ -29,52 +26,51 @@ type Result struct {
 	MainSig     string `json:"main_sig"`
 	PrevMainSig string `json:"prev_main_sig"`
 	Changed     bool   `json:"changed"`
+
+	// 追加：どの検出方式か
+	Provider string `json:"provider,omitempty"`
+
+	// 追加：差分サマリ
+	Added    int      `json:"added,omitempty"`
+	Modified int      `json:"modified,omitempty"`
+	Removed  int      `json:"removed,omitempty"`
+	Sample   []string `json:"sample,omitempty"`
 }
 
 type Runner struct{}
 
-func New() *Runner { return &Runner{} }
+type Preflight struct {
+	providers []Provider
+}
 
-func (r *Runner) Run(instanceID, nodeID, stateDir, mainRoot string, exclude []string) Result {
+func New() *Preflight {
+	// 優先順位：ZFS（将来）→Generic
+	return &Preflight{
+		providers: []Provider{
+			// TODO: ZFSProvider をここに挿す（datasetが分かるようになったら）
+			&GenericIndexProvider{},
+		},
+	}
+}
+
+func (p *Preflight) Run(instanceID, nodeID, stateDir, mainRoot string, excludes []string) Result {
 	now := time.Now()
-	res := Result{
-		OK:        true,
-		Message:   "ok",
+
+	// Providerを順に試す。今回は必ずGenericが成功する想定。
+	for _, pr := range p.providers {
+		res, err := pr.Run(now, instanceID, nodeID, stateDir, mainRoot, excludes)
+		if err == nil && res.OK {
+			return res
+		}
+		// 失敗したら次のproviderへ（将来ZFSが落ちた時にフォールバックさせる）
+	}
+	return Result{
+		OK:        false,
+		Message:   "no provider succeeded",
 		Instance:  instanceID,
 		NodeID:    nodeID,
 		NowUnixMs: now.UnixMilli(),
 	}
-
-	res.MainChecked = true
-
-	// compute current signature
-	sr, err := ScanTree(ScanConfig{
-		Root:         mainRoot,
-		ExcludeGlobs: exclude,
-		Now:          now,
-	})
-	if err != nil {
-		res.OK = false
-		res.Message = "scan failed: " + err.Error()
-		return res
-	}
-	res.MainSig = sr.Sig
-
-	// load previous signature
-	prev, _ := loadSig(stateDir, instanceID, nodeID)
-	res.PrevMainSig = prev
-	res.Changed = (prev != "" && prev != sr.Sig)
-
-	// save signature for next boot
-	_ = saveSig(stateDir, instanceID, nodeID, sr.Sig)
-
-	res.ShadowPrepared = true
-	res.JournalPrepared = true
-
-	// If changed, caller should set pending dirty (hook; we return flag)
-	res.PendingMaybeSet = res.Changed
-
-	return res
 }
 
 func sigPath(stateDir, instanceID, nodeID string) string {
