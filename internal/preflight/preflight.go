@@ -1,6 +1,7 @@
 package preflight
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,17 +57,26 @@ func New() *Preflight {
 func (p *Preflight) Run(instanceID, nodeID, stateDir, mainRoot string, excludes []string) Result {
 	now := time.Now()
 
-	// Providerを順に試す。今回は必ずGenericが成功する想定。
+	var lastErr error
 	for _, pr := range p.providers {
 		res, err := pr.Run(now, instanceID, nodeID, stateDir, mainRoot, excludes)
 		if err == nil && res.OK {
 			return res
 		}
-		// 失敗したら次のproviderへ（将来ZFSが落ちた時にフォールバックさせる）
+		if err != nil {
+			lastErr = err
+		} else if !res.OK && res.Message != "" {
+			lastErr = errors.New(res.Message)
+		}
+	}
+
+	msg := "no provider succeeded"
+	if lastErr != nil {
+		msg = msg + ": " + lastErr.Error()
 	}
 	return Result{
 		OK:        false,
-		Message:   "no provider succeeded",
+		Message:   msg,
 		Instance:  instanceID,
 		NodeID:    nodeID,
 		NowUnixMs: now.UnixMilli(),
