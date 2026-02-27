@@ -1,11 +1,13 @@
 package preflight
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/EixyScience/zmesh/internal/diff"
+	"github.com/EixyScience/zmesh/internal/diffbase"
 )
 
 // ZMESH:PREFLIGHT:MVP
@@ -38,49 +40,101 @@ type Result struct {
 	Sample   []string `json:"sample,omitempty"`
 }
 
-type Runner struct{}
+type Preflight struct{}
 
-type Preflight struct {
-	providers []Provider
-}
+func New() *Preflight { return &Preflight{} }
 
-func New() *Preflight {
-	// 優先順位：ZFS（将来）→Generic
-	return &Preflight{
-		providers: []Provider{
-			// TODO: ZFSProvider をここに挿す（datasetが分かるようになったら）
-			&GenericIndexProvider{},
-		},
-	}
-}
+//func New() *Runner { return &Runner{} }
 
 func (p *Preflight) Run(instanceID, nodeID, stateDir, mainRoot string, excludes []string) Result {
 	now := time.Now()
 
-	var lastErr error
-	for _, pr := range p.providers {
-		res, err := pr.Run(now, instanceID, nodeID, stateDir, mainRoot, excludes)
-		if err == nil && res.OK {
-			return res
+	dr, err := diff.Detect(diffbase.DetectRequest{
+		InstanceID: instanceID,
+		NodeID:     nodeID,
+		MainRoot:   mainRoot,
+		StateDir:   stateDir,
+		Excludes:   excludes,
+	})
+	if err != nil || !dr.OK {
+		msg := "no provider succeeded"
+		if dr.Message != "" {
+			msg = dr.Message
+		} else if err != nil {
+			msg = err.Error()
 		}
-		if err != nil {
-			lastErr = err
-		} else if !res.OK && res.Message != "" {
-			lastErr = errors.New(res.Message)
+		return Result{
+			OK:        false,
+			Message:   msg,
+			Instance:  instanceID,
+			NodeID:    nodeID,
+			NowUnixMs: now.UnixMilli(),
+
+			MainChecked:     false,
+			ShadowPrepared:  false,
+			JournalPrepared: false,
+
+			PendingMaybeSet: false,
+			Changed:         false,
+			Provider:        dr.Provider,
 		}
 	}
 
-	msg := "no provider succeeded"
-	if lastErr != nil {
-		msg = msg + ": " + lastErr.Error()
-	}
 	return Result{
-		OK:        false,
-		Message:   msg,
+		OK:        true,
+		Message:   "ok",
 		Instance:  instanceID,
 		NodeID:    nodeID,
 		NowUnixMs: now.UnixMilli(),
+
+		MainChecked:     true,
+		ShadowPrepared:  false, // ZMESH:TODO: next phase
+		JournalPrepared: false, // ZMESH:TODO: next phase
+
+		PendingMaybeSet: dr.PendingMaybeSet,
+
+		MainSig:     dr.MainSig,
+		PrevMainSig: dr.PrevMainSig,
+
+		Changed:  dr.Changed,
+		Provider: dr.Provider,
 	}
+
+	/*
+	   	for _, pr := range p.providers {
+	   		//res, err := pr.Run(now, instanceID, nodeID, stateDir, mainRoot, excludes)
+	   		res, err := diffbase.Detect(diff.DetectRequest{
+	   			InstanceID: in.ID,
+	   			NodeID:     nid,
+
+	   			MainRoot: mainRoot,
+	   			StateDir: stateDir,
+	   			Excludes: excludes,
+	   		})
+	   		if err == nil && res.OK {
+	   			return res
+	   		}
+	   		if err != nil {
+	   			lastErr = err
+	   		} else if !res.OK && res.Message != "" {
+	   			lastErr = errors.New(res.Message)
+	   		}
+	   	}
+
+	   msg := "no provider succeeded"
+
+	   	if lastErr != nil {
+	   		msg = msg + ": " + lastErr.Error()
+	   	}
+
+	   	return Result{
+	   		OK:        false,
+	   		Message:   msg,
+	   		Instance:  instanceID,
+	   		NodeID:    nodeID,
+	   		NowUnixMs: now.UnixMilli(),
+	   	}
+	*/
 }
 
 func sigPath(stateDir, instanceID, nodeID string) string {
