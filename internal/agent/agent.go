@@ -11,11 +11,15 @@ import (
 
 	"github.com/EixyScience/zmesh/internal/config"
 	"github.com/EixyScience/zmesh/internal/id"
+	"github.com/EixyScience/zmesh/internal/instance"
 	"github.com/EixyScience/zmesh/internal/membership"
 	"github.com/EixyScience/zmesh/internal/transport"
 )
 
-type Agent struct{ cfg *config.Config }
+type Agent struct {
+	Cfg        *config.Config
+	ConfigPath string // -c で渡された zmesh.conf のパス
+}
 
 // tools
 func absFrom(baseDir, p string) string {
@@ -29,16 +33,37 @@ func absFrom(baseDir, p string) string {
 }
 
 // main functions
-func New(cfg *config.Config) *Agent { return &Agent{cfg: cfg} }
+func New(cfg *config.Config, configPath string) *Agent {
+	return &Agent{Cfg: cfg, ConfigPath: configPath}
+}
 
 func (a *Agent) Run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// configファイルのディレクトリを取得（-c の zmesh.conf の場所）
+	baseDir := filepath.Dir(a.ConfigPath)
+
+	// まずは “デフォルト” を絶対パスにして注入（paths を config 側に生やしたらここを差し替える）
+	defaults := instance.Paths{
+		StateDir:     absFrom(baseDir, "./zmesh.state"),
+		WatchRoot:    absFrom(baseDir, "./main"),
+		WatchExclude: []string{"./zmesh.state/**"},
+	}
+
+	//defaults := instance.Paths{
+	//	StateDir:     absFrom(baseDir, a.Cfg.Paths.StateDir),
+	//	WatchRoot:    absFrom(baseDir, a.Cfg.Paths.WatchRoot),
+	//	WatchExclude: a.Cfg.Paths.WatchExclude,
+	//}
+	//reg := router.NewRegistry(0, defaults)
+	//reg := router.NewRegistryWithDefaults(0, defaults)
+	//rt := router.New(reg)
+
 	// LAN UDP
 	udp := &membership.UDP{
-		Listen: a.cfg.LAN.UDPListen,
-		Peers:  a.cfg.LAN.UDPPeers,
+		Listen: a.Cfg.LAN.UDPListen,
+		Peers:  a.Cfg.LAN.UDPPeers,
 	}
 	go func() {
 		_ = udp.Serve(ctx, func(from string, hb membership.Heartbeat) {
@@ -48,14 +73,14 @@ func (a *Agent) Run() error {
 
 	// Role string
 	role := "node"
-	if a.cfg.Role.Prime {
+	if a.Cfg.Role.Prime {
 		role = "prime"
-	} else if a.cfg.Role.Governor {
+	} else if a.Cfg.Role.Governor {
 		role = "governor"
 	}
 
 	// ScaleFS instance ID (UUIDv7)
-	instanceID := a.cfg.ScaleFS.ID
+	instanceID := a.Cfg.ScaleFS.ID
 	if instanceID == "" {
 		u, err := id.NewUUID7()
 		if err != nil {
@@ -69,11 +94,12 @@ func (a *Agent) Run() error {
 
 	// WAN HTTP (optional)
 	var httpx *transport.HTTP
-	if a.cfg.WAN.Enabled {
+	if a.Cfg.WAN.Enabled {
 		httpx = &transport.HTTP{
-			Listen:      a.cfg.WAN.Listen,
-			Peers:       a.cfg.WAN.Peers,
-			RegistryTTL: 10 * time.Minute, // lazy instances expire if unused
+			Listen:           a.Cfg.WAN.Listen,
+			Peers:            a.Cfg.WAN.Peers,
+			RegistryDefaults: defaults,
+			RegistryTTL:      10 * time.Minute, // lazy instances expire if unused
 		}
 		// ZMESH:TOKEN: automatic claim/renew loop
 		// ZMESH:EXTEND: replace with distributed consensus when orchestration layer is implemented
@@ -82,8 +108,8 @@ func (a *Agent) Run() error {
 			go func() {
 
 				base := ""
-				if len(a.cfg.WAN.Peers) > 0 {
-					base = a.cfg.WAN.Peers[0]
+				if len(a.Cfg.WAN.Peers) > 0 {
+					base = a.Cfg.WAN.Peers[0]
 				}
 
 				if base == "" {
@@ -91,7 +117,7 @@ func (a *Agent) Run() error {
 					return
 				}
 
-				nodeID := a.cfg.Node.ID
+				nodeID := a.Cfg.Node.ID
 
 				for {
 
@@ -137,7 +163,7 @@ func (a *Agent) Run() error {
 	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 
 	fmt.Printf("zmesh agent start node=%s site=%s role=%s scalefs=%s lan=%s wan=%v\n",
-		a.cfg.Node.ID, a.cfg.Node.Site, role, instanceID, a.cfg.LAN.UDPListen, a.cfg.WAN.Enabled)
+		a.Cfg.Node.ID, a.Cfg.Node.Site, role, instanceID, a.Cfg.LAN.UDPListen, a.Cfg.WAN.Enabled)
 
 	tick := time.NewTicker(1 * time.Second)
 	defer tick.Stop()
@@ -150,14 +176,14 @@ func (a *Agent) Run() error {
 			return nil
 		case t := <-tick.C:
 			udp.Send(membership.Heartbeat{
-				NodeID: a.cfg.Node.ID,
-				Site:   a.cfg.Node.Site,
+				NodeID: a.Cfg.Node.ID,
+				Site:   a.Cfg.Node.Site,
 				TSUnix: t.Unix(),
 			})
 			if httpx != nil {
 				httpx.SendHeartbeat(instanceID, transport.Heartbeat{
-					NodeID: a.cfg.Node.ID,
-					Site:   a.cfg.Node.Site,
+					NodeID: a.Cfg.Node.ID,
+					Site:   a.Cfg.Node.Site,
 					Role:   role,
 					TSUnix: t.Unix(),
 				}, 2*time.Second)

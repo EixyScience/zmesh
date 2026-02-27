@@ -60,7 +60,9 @@ type Instance struct {
 	q *queue.Queue
 
 	// ZMESH:PATHS: injected from agent config; must be absolute
-	paths Paths
+	paths        Paths
+	pendingStore *pendingstore.Store
+	benchStore   *bench.Store
 
 	// existing injected state:
 	// pending *pendingstore.Store

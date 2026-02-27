@@ -39,7 +39,11 @@ type reconcileReply struct {
 	EnqueuedNew int      `json:"enqueued_new"`
 }
 
-func NewRegistry(ttl time.Duration, defaults instance.Paths) *Registry {
+func NewRegistry(ttl time.Duration) *Registry {
+	return NewRegistryWithDefaults(ttl, instance.Paths{})
+}
+
+func NewRegistryWithDefaults(ttl time.Duration, defaults instance.Paths) *Registry {
 	return &Registry{
 		items:        make(map[string]*instance.Instance),
 		ttl:          ttl,

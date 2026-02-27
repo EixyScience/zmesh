@@ -46,9 +46,9 @@ Usage:
 }
 
 func agentCmd(args []string) {
-	fs := flag.NewFlagSet("agent", flag.ExitOnError)
-	cfgPath := fs.String("c", "zmesh.conf", "path to config ini")
-	fs.Parse(args)
+	// -c path/to/zmesh.conf
+	cfgPath := flag.String("c", "./zmesh.conf", "path to zmesh.conf")
+	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -56,7 +56,7 @@ func agentCmd(args []string) {
 		os.Exit(1)
 	}
 
-	a := agent.New(cfg)
+	a := agent.New(cfg, *cfgPath)
 	if err := a.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
 		os.Exit(1)

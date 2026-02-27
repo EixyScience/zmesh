@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/EixyScience/zmesh/internal/instance"
 	"github.com/EixyScience/zmesh/internal/router"
 )
 
@@ -16,11 +17,12 @@ type HTTP struct {
 	Listen string
 	Peers  []string
 
-	RegistryTTL time.Duration
+	RegistryDefaults instance.Paths
+	RegistryTTL      time.Duration
 }
 
 func (h *HTTP) Serve(ctx context.Context) error {
-	reg := router.NewRegistry(h.RegistryTTL)
+	reg := router.NewRegistryWithDefaults(h.RegistryTTL, h.RegistryDefaults)
 	rt := router.New(reg)
 
 	mux := rt.Handler()
