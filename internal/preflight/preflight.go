@@ -1,6 +1,9 @@
 package preflight
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -22,13 +25,17 @@ type Result struct {
 	ShadowPrepared  bool `json:"shadow_prepared"`
 	JournalPrepared bool `json:"journal_prepared"`
 	PendingMaybeSet bool `json:"pending_maybe_set"`
+
+	MainSig     string `json:"main_sig"`
+	PrevMainSig string `json:"prev_main_sig"`
+	Changed     bool   `json:"changed"`
 }
 
 type Runner struct{}
 
 func New() *Runner { return &Runner{} }
 
-func (r *Runner) Run(instanceID, nodeID string) Result {
+func (r *Runner) Run(instanceID, nodeID, stateDir, mainRoot string, exclude []string) Result {
 	now := time.Now()
 	res := Result{
 		OK:        true,
@@ -38,17 +45,59 @@ func (r *Runner) Run(instanceID, nodeID string) Result {
 		NowUnixMs: now.UnixMilli(),
 	}
 
-	// ZMESH:PREFLIGHT:HOOK: check main integrity / detect pre-start changes
 	res.MainChecked = true
 
-	// ZMESH:PREFLIGHT:HOOK: ensure .shadow exists / safety staging ready
-	res.ShadowPrepared = true
+	// compute current signature
+	sr, err := ScanTree(ScanConfig{
+		Root:         mainRoot,
+		ExcludeGlobs: exclude,
+		Now:          now,
+	})
+	if err != nil {
+		res.OK = false
+		res.Message = "scan failed: " + err.Error()
+		return res
+	}
+	res.MainSig = sr.Sig
 
-	// ZMESH:PREFLIGHT:HOOK: ensure change journal exists / is writable
+	// load previous signature
+	prev, _ := loadSig(stateDir, instanceID, nodeID)
+	res.PrevMainSig = prev
+	res.Changed = (prev != "" && prev != sr.Sig)
+
+	// save signature for next boot
+	_ = saveSig(stateDir, instanceID, nodeID, sr.Sig)
+
+	res.ShadowPrepared = true
 	res.JournalPrepared = true
 
-	// ZMESH:PREFLIGHT:HOOK: if pre-start changes detected -> set pending dirty
-	res.PendingMaybeSet = false
+	// If changed, caller should set pending dirty (hook; we return flag)
+	res.PendingMaybeSet = res.Changed
 
 	return res
+}
+
+func sigPath(stateDir, instanceID, nodeID string) string {
+	return filepath.Join(stateDir, "preflight", instanceID, nodeID+".sig")
+}
+
+func loadSig(stateDir, instanceID, nodeID string) (string, error) {
+	fp := sigPath(stateDir, instanceID, nodeID)
+	b, err := os.ReadFile(fp)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+func saveSig(stateDir, instanceID, nodeID, sig string) error {
+	fp := sigPath(stateDir, instanceID, nodeID)
+	if err := os.MkdirAll(filepath.Dir(fp), 0o755); err != nil {
+		return err
+	}
+	tmp := fp + ".tmp"
+	if err := os.WriteFile(tmp, []byte(sig+"\n"), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, fp)
 }

@@ -238,7 +238,7 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Require node_id in body (explicit, avoids ambiguity)
+		// body: node_id
 		var req struct {
 			NodeID string `json:"node_id"`
 		}
@@ -250,8 +250,40 @@ func (rt *Router) dispatch(w http.ResponseWriter, r *http.Request) {
 		if nid == "" {
 			nid = in.NodeID()
 		}
+
+		mainRoot := strings.TrimSpace(r.URL.Query().Get("main"))
+		if mainRoot == "" {
+			mainRoot = "./main"
+		}
+
+		stateDir := strings.TrimSpace(r.URL.Query().Get("state"))
+		if stateDir == "" {
+			stateDir = "./zmesh.state"
+		}
+
+		// exclude (optional) comma-separated
+		ex := strings.TrimSpace(r.URL.Query().Get("exclude"))
+		var excludes []string
+		if ex != "" {
+			for _, p := range strings.Split(ex, ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					excludes = append(excludes, p)
+				}
+			}
+		}
+
+		// always exclude internal dirs by default (safe)
+		excludes = append(excludes, ".shadow/**", ".latest/**", ".tmp/**", "zmesh.state/**")
+
 		pr := preflight.New()
-		res := pr.Run(in.ID, nid)
+		res := pr.Run(in.ID, nid, stateDir, mainRoot, excludes)
+
+		// If changed, set pending dirty immediately (this is safe)
+		if res.OK && res.PendingMaybeSet {
+			_ = in.PendingSet(nid, true, res.NowUnixMs)
+		}
+
 		writeJSON(w, http.StatusOK, res)
 		return
 
