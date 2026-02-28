@@ -12,90 +12,31 @@ scalefs - ScaleFS local filesystem body helper
 
 USAGE
   scalefs <command> [options]
+  scalefs help
 
-COMMANDS
-  init         Create skeleton for a scalefs body in the current directory
-  add          Create a new scalefs body under a registered root (name + shortid)
-  list         List scalefs bodies under registered roots
-  remove       Remove a scalefs body (best-effort; may refuse if mounted)
-  manifest     Output scalefs body manifest (metadata/config summary)
-  clean        Cleanup runtime/state artifacts (and optional ZFS destroy)
-  mount        Mount scalefs main (ZFS if available; otherwise no-op/placeholder)
-  umount       Unmount scalefs main (ZFS if available; otherwise no-op/placeholder)
-  snapshot     Create a snapshot (ZFS-only for now)
-  sync         Sync snapshot to peer (ZFS-only placeholder for now)
-  help         Show this help
+COMMANDS (one-line)
+  init        Create skeleton for a scalefs body in the current directory
+  add         Create a new scalefs body under a registered root (name + shortid)
+  list        List scalefs bodies under registered roots
+  remove      Remove a scalefs body (best-effort; may refuse if mounted)
+  mount       Mount scalefs main (ZFS if available; otherwise no-op/placeholder)
+  umount      Unmount scalefs main (ZFS if available; otherwise no-op/placeholder)
+  manifest    Print a manifest for a scalefs body (json/ini)
+  clean       Clean runtime/state; optionally destroy zfs/body
+  snapshot    Create a snapshot (ZFS-only for now)
+  sync        Sync snapshot to peer (ZFS-only placeholder for now)
+  help        Show this help
 
-COMMON OPTIONS
-  -h, --help   Show help for scalefs or for a subcommand
+GLOBAL OPTIONS
+  -h, --help  Show help
 
-DETAILS
-  For subcommand details:
-    scalefs <command> --help
+COMMAND HELP / EXAMPLES
+  scalefs manifest -h
+  scalefs clean -h
 
-COMMAND HELP + EXAMPLES
-
-  scalefs init
-    Create skeleton in current directory.
-    Examples:
-      scalefs init
-
-  scalefs add
-    Create new body under a root.
-    Options:
-      -Root, -r PATH/ALIAS     (current implementation uses path; alias support may be added)
-      -Name, -n NAME
-      -Pool, --pool POOL
-      -NoZfs, --no-zfs
-    Examples:
-      scalefs add -Name DemoCell
-      scalefs add -Root "$HOME\scalefs" -Name DemoCell -NoZfs
-
-  scalefs list
-    List bodies.
-    Options:
-      -Root, -r ALIAS
-      -Id,   -i SUBSTR
-      -Full
-    Examples:
-      scalefs list
-      scalefs list -r default -Full
-
-  scalefs remove
-    Remove a body.
-    Options:
-      -Id,   -i ID
-      -Root, -r ALIAS
-      -KeepZfs
-      -Yes,  -y
-    Examples:
-      scalefs remove -i democell.28e671 -r default -y
-
-  scalefs manifest
-    Output body manifest.
-    Options:
-      -Path, -p PATH   ('.' allowed)
-      -Id,   -i ID
-      -Root, -r ALIAS
-      -Format, -f json|ini
-    Examples:
-      scalefs manifest -p .
-      scalefs manifest -i democell.28e671 -r default -f ini
-
-  scalefs clean
-    Cleanup artifacts (default: runtime only).
-    Options:
-      -Path, -p PATH   ('.' allowed)
-      -Id,   -i ID
-      -Root, -r ALIAS
-      -DryRun
-      -Force
-      -Zfs            (requires -Force)
-      -Yes, -y
-    Examples:
-      scalefs clean -i democell.28e671 -DryRun
-      scalefs clean -i democell.28e671 -Force -Yes
-      scalefs clean -i democell.28e671 -Force -Zfs -Yes
+NOTES
+  - To see help via zmesh:
+      zmesh scalefs help
 "@ 
 }
 
@@ -126,7 +67,6 @@ switch ($cmd) {
   "init" { Run-Script "scalefs-init.ps1" $rest }
   "mount" { Run-Script "scalefs-mount.ps1" $rest }
   "umount" { Run-Script "scalefs-umount.ps1" $rest }
-
   "add" { Run-Script "add-scalefs.ps1" $rest }
   "list" { Run-Script "list-scalefs.ps1" $rest }
   "remove" { Run-Script "remove-scalefs.ps1" $rest }
@@ -134,8 +74,6 @@ switch ($cmd) {
   "manifest" { Run-Script "manifest-scalefs.ps1" $rest }
   "clean" { Run-Script "clean-scalefs.ps1" $rest }
 
-  "clone" { Run-Script "clone-scalefs.ps1" $rest }
-  "move" { Run-Script "move-scalefs.ps1" $rest }
   "snapshot" { Run-Script "snapshot-scalefs.ps1" $rest }
   "sync" { Run-Script "sync-scalefs.ps1" $rest }
 

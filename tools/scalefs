@@ -3,7 +3,6 @@ set -eu
 
 TOOLBASE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
-# tools/優先。無ければ直下。
 find_tool() {
   name="$1"
   if [ -f "$TOOLBASE/tools/$name" ]; then
@@ -23,91 +22,32 @@ scalefs - ScaleFS local filesystem body helper
 
 USAGE
   scalefs <command> [options]
+  scalefs help
 
-COMMANDS
-  init         Create skeleton for a scalefs body in the current directory
-  add          Create a new scalefs body under a registered root (name + shortid)
-  list         List scalefs bodies under registered roots
-  remove       Remove a scalefs body (best-effort; may refuse if mounted)
-  manifest     Output scalefs body manifest (metadata/config summary)
-  clean        Cleanup runtime/state artifacts (and optional ZFS destroy)
-  mount        Mount scalefs main (ZFS if available; otherwise no-op/placeholder)
-  umount       Unmount scalefs main (ZFS if available; otherwise no-op/placeholder)
-  snapshot     Create a snapshot (ZFS-only for now)
-  sync         Sync snapshot to peer (ZFS-only placeholder for now)
-  help         Show this help
+COMMANDS (one-line)
+  init        Create skeleton for a scalefs body in the current directory
+  add         Create a new scalefs body under a registered root (name + shortid)
+  list        List scalefs bodies under registered roots
+  remove      Remove a scalefs body (best-effort; may refuse if mounted)
+  mount       Mount scalefs main (ZFS if available; otherwise no-op/placeholder)
+  umount      Unmount scalefs main (ZFS if available; otherwise no-op/placeholder)
+  manifest    Print a manifest for a scalefs body (json/ini)
+  clean       Clean runtime/state; optionally destroy zfs/body
+  snapshot    Create a snapshot (ZFS-only for now)
+  sync        Sync snapshot to peer (ZFS-only placeholder for now)
+  help        Show this help
 
-COMMON OPTIONS
-  -h, --help   Show help for scalefs or for a subcommand
+GLOBAL OPTIONS
+  -h, --help  Show help
 
-DETAILS
-  For subcommand details:
-    scalefs <command> --help
+COMMAND HELP / EXAMPLES
+  scalefs add --help
+  scalefs manifest --help
+  scalefs clean --help
 
-COMMAND HELP + EXAMPLES
-
-  scalefs init
-    Create skeleton in current directory.
-    Examples:
-      scalefs init
-
-  scalefs add
-    Create new body under a registered root.
-    Options:
-      -r, --root ALIAS    Root alias (optional; interactive if omitted)
-      -n, --name NAME     Human name (normalized)
-      --no-zfs            Disable ZFS even if available
-      --zfs-pool POOL     Override ZFS pool (optional)
-    Examples:
-      scalefs add -r test -n DemoCell
-      ROOT=test NAME=DemoCell scalefs add
-
-  scalefs list
-    List bodies.
-    Options:
-      -r, --root ALIAS    Filter by root alias
-      -i, --id SUBSTR     Filter by id substring
-      --full              Show full path
-    Examples:
-      scalefs list
-      scalefs list -r default --full
-      scalefs list -i democell.
-
-  scalefs remove
-    Remove body (and optional ZFS destroy depending on implementation).
-    Options:
-      -i, --id ID         Target id (name.shortid)
-      -r, --root ALIAS    Root alias (recommended if multiple roots)
-      -y, --yes           Non-interactive (assume yes)
-      --keep-zfs          Do not destroy dataset
-    Examples:
-      scalefs remove -i democell.28e671 -r default -y
-
-  scalefs manifest
-    Output body manifest.
-    Options:
-      -p, --path PATH     Body directory (contains scalefs.ini); '.' allowed
-      -i, --id ID         Body id (resolved via roots)
-      -r, --root ALIAS    Root alias for id resolution
-      -f, --format FMT    json|ini (default: json)
-    Examples:
-      scalefs manifest -p .
-      scalefs manifest -i democell.28e671 -r default -f ini
-
-  scalefs clean
-    Cleanup artifacts (default: runtime only).
-    Options:
-      -p, --path PATH     Body directory (contains scalefs.ini); '.' allowed
-      -i, --id ID         Body id (resolved via roots)
-      -r, --root ALIAS    Root alias for id resolution
-      --dry-run           Show what would be removed
-      --force             Allow removing state caches/logs
-      --zfs               Also attempt zfs destroy (requires --force)
-      -y, --yes           Non-interactive (assume yes)
-    Examples:
-      scalefs clean -i democell.28e671 --dry-run
-      scalefs clean -i democell.28e671 --force -y
-      scalefs clean -i democell.28e671 --force --zfs -y
+NOTES
+  - To see help via zmesh:
+      zmesh scalefs help
 EOF
 }
 
@@ -127,7 +67,6 @@ case "$cmd" in
   init)     run "scalefs-init.sh" "$@";;
   mount)    run "scalefs-mount.sh" "$@";;
   umount)   run "scalefs-umount.sh" "$@";;
-
   add)      run "add-scalefs.sh" "$@";;
   list)     run "list-scalefs.sh" "$@";;
   remove)   run "remove-scalefs.sh" "$@";;
