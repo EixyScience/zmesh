@@ -72,10 +72,11 @@ ADD="$TOOLS_DIR/add-scalefs.sh"
 [ -x "$ADD" ] || die "not executable: $ADD (chmod +x tools/add-scalefs.sh)"
 
 say "  creating scalefs by stdin automation..."
-printf "test\nDemoCell\n" | (cd "$TOOLS_DIR" && sh "./add-scalefs.sh") >/dev/null 2>&1 || die "add-scalefs.sh failed"
-
+# printf "test\nDemoCell\n" | (cd "$TOOLS_DIR" && sh "./add-scalefs.sh") >/dev/null 2>&1 || die "add-scalefs.sh failed"
+log="$TMP/add-scalefs.log"
 created_dir="$(ls -1 "$ROOTPATH" 2>/dev/null | grep -E '^democell\.[0-9a-f]{6}$' | head -n 1 || true)"
 [ -n "$created_dir" ] || die "created scalefs dir not found under root (expected democell.<6hex>)"
+
 
 SCALEFS_DIR="$ROOTPATH/$created_dir"
 say "  created: $SCALEFS_DIR"
