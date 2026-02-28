@@ -67,8 +67,19 @@ say "  OK: help works"
 say "[2] add-scalefs smoke (temp root + temp config)"
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/zmesh-test.XXXXXX")
-cleanup() { rm -rf "$TMP"; }
+
+created_dir=""
+cleanup() {
+  # If scalefs was created, remove via tool (handles zfs destroy via marker)
+  if [ -n "$created_dir" ]; then
+    # remove-scalefs.sh is interactive; feed name via stdin
+    printf "%s\n" "$created_dir" | (cd "$TOOLS_DIR" && sh ./remove-scalefs.sh) >/dev/null 2>&1 || true
+  fi
+  rm -rf "$TMP" >/dev/null 2>&1 || true
+}
 trap cleanup EXIT INT TERM
+
+
 
 # temp config dir for common.sh load_roots()
 export ZCONF_DIR="$TMP/etc/zmesh"
