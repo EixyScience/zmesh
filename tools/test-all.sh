@@ -72,22 +72,39 @@ ADD="$TOOLS_DIR/add-scalefs.sh"
 [ -x "$ADD" ] || die "not executable: $ADD (chmod +x tools/add-scalefs.sh)"
 
 say "  creating scalefs by stdin automation..."
-# printf "test\nDemoCell\n" | (cd "$TOOLS_DIR" && sh "./add-scalefs.sh") >/dev/null 2>&1 || die "add-scalefs.sh failed"
-log="$TMP/add-scalefs.log"
-created_dir="$(ls -1 "$ROOTPATH" 2>/dev/null | grep -E '^democell\.[0-9a-f]{6}$' | head -n 1 || true)"
-[ -n "$created_dir" ] || die "created scalefs dir not found under root (expected democell.<6hex>)"
+printf "test\nDemoCell\n" | (cd "$TOOLS_DIR" && sh "./add-scalefs.sh") >/dev/null 2>&1 || die "add-scalefs.sh failed"
 
+# Validate: under ROOTPATH there should be "democell.<something>/" directory
+# Be tolerant: shortid length/charset can vary by platform/tool availability.
+created_dir="$(
+  ls -1 "$ROOTPATH" 2>/dev/null \
+    | grep -E '^democell\.[a-z0-9._-]+$' \
+    | head -n 1 || true
+)"
+[ -n "$created_dir" ] || {
+  say "  debug: ROOTPATH listing:"
+  ls -la "$ROOTPATH" 2>/dev/null || true
+  die "created scalefs dir not found under root (expected democell.<id>)"
+}
 
 SCALEFS_DIR="$ROOTPATH/$created_dir"
 say "  created: $SCALEFS_DIR"
 
+# Validate required skeleton
 [ -d "$SCALEFS_DIR/main" ] || die "missing main/"
 [ -d "$SCALEFS_DIR/scalefs.state" ] || die "missing scalefs.state/"
 [ -d "$SCALEFS_DIR/scalefs.global.d" ] || die "missing scalefs.global.d/"
 [ -d "$SCALEFS_DIR/scalefs.local.d" ] || die "missing scalefs.local.d/"
 [ -d "$SCALEFS_DIR/scalefs.runtime.d" ] || die "missing scalefs.runtime.d/"
 [ -f "$SCALEFS_DIR/scalefs.ini" ] || die "missing scalefs.ini"
-grep -q '^id=' "$SCALEFS_DIR/scalefs.ini" || die "scalefs.ini missing id="
+
+# Validate scalefs.ini contains id=... and matches directory name best-effort
+ini_id="$(awk -F= '/^id=/{print $2; exit}' "$SCALEFS_DIR/scalefs.ini" 2>/dev/null || true)"
+[ -n "$ini_id" ] || die "scalefs.ini missing id="
+dir_base="$(basename "$SCALEFS_DIR")"
+[ "$ini_id" = "$dir_base" ] || {
+  say "  warn: scalefs.ini id ($ini_id) != dir name ($dir_base) (continuing)"
+}
 
 say "  OK: scalefs skeleton verified"
 
