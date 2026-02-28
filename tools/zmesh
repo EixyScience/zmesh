@@ -1,0 +1,81 @@
+#!/bin/sh
+set -eu
+
+TOOLBASE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+# tools/優先。無ければ直下。
+find_tool() {
+  name="$1"
+  if [ -f "$TOOLBASE/tools/$name" ]; then
+    echo "$TOOLBASE/tools/$name"
+    return 0
+  fi
+  if [ -f "$TOOLBASE/$name" ]; then
+    echo "$TOOLBASE/$name"
+    return 0
+  fi
+  return 1
+}
+
+help() {
+cat <<'EOF'
+Usage:
+  zmesh <command> [args...]
+
+Commands:
+  init                -> zmesh-init.sh
+  start               -> zmesh-start.sh
+  stop                -> zmesh-stop.sh
+  status              -> zmesh-status.sh
+  doctor              -> doctor.sh
+
+  root add            -> add-root.sh
+  root list           -> list-root.sh
+  root remove         -> remove-root.sh
+
+  scalefs <...>       -> forward to ./scalefs
+
+Notes:
+  - Tools can live either in repository root or under ./tools/
+EOF
+}
+
+run() {
+  f="$1"; shift
+  path="$(find_tool "$f")" || { echo "missing tool: $f (searched: $TOOLBASE/tools and $TOOLBASE)"; exit 127; }
+  exec "$path" "$@"
+}
+
+[ $# -ge 1 ] || { help; exit 0; }
+case "$1" in
+  -h|--help|help) help; exit 0;;
+esac
+
+cmd="$1"; shift || true
+
+case "$cmd" in
+  init)   run "zmesh-init.sh" "$@";;
+  start)  run "zmesh-start.sh" "$@";;
+  stop)   run "zmesh-stop.sh" "$@";;
+  status) run "zmesh-status.sh" "$@";;
+  doctor) run "doctor.sh" "$@";;
+
+  root)
+    [ $# -ge 1 ] || { help; exit 2; }
+    sub="$1"; shift || true
+    case "$sub" in
+      add)    run "add-root.sh" "$@";;
+      list)   run "list-root.sh" "$@";;
+      remove) run "remove-root.sh" "$@";;
+      *) help; exit 2;;
+    esac
+    ;;
+
+  scalefs)
+    # scalefs自体も tools/ / 直下のどちらでもOKにする
+    spath="$(find_tool "scalefs")" || { echo "missing tool: scalefs"; exit 127; }
+    exec "$spath" "$@"
+    ;;
+
+  *) help; exit 2;;
+esac

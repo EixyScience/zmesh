@@ -1,0 +1,69 @@
+#!/bin/sh
+set -eu
+
+TOOLBASE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+find_tool() {
+  name="$1"
+  if [ -f "$TOOLBASE/tools/$name" ]; then
+    echo "$TOOLBASE/tools/$name"
+    return 0
+  fi
+  if [ -f "$TOOLBASE/$name" ]; then
+    echo "$TOOLBASE/$name"
+    return 0
+  fi
+  return 1
+}
+
+help() {
+cat <<'EOF'
+Usage:
+  scalefs <command> [args...]
+
+Commands:
+  init     -> scalefs-init.sh
+  mount    -> scalefs-mount.sh
+  umount   -> scalefs-umount.sh
+  add      -> add-scalefs.sh
+  list     -> list-scalefs.sh
+  remove   -> remove-scalefs.sh
+
+advanced:
+  clone    -> clone-scalefs.sh
+  move     -> move-scalefs.sh
+  snapshot -> snapshot-scalefs.sh
+  sync     -> sync-scalefs.sh
+
+Notes:
+  - Tools can live either in repository root or under ./tools/
+EOF
+}
+
+run() {
+  f="$1"; shift
+  path="$(find_tool "$f")" || { echo "missing tool: $f (searched: $TOOLBASE/tools and $TOOLBASE)"; exit 127; }
+  exec "$path" "$@"
+}
+
+[ $# -ge 1 ] || { help; exit 0; }
+case "$1" in
+  -h|--help|help) help; exit 0;;
+esac
+
+cmd="$1"; shift || true
+case "$cmd" in
+  init)     run "scalefs-init.sh" "$@";;
+  mount)    run "scalefs-mount.sh" "$@";;
+  umount)   run "scalefs-umount.sh" "$@";;
+  add)      run "add-scalefs.sh" "$@";;
+  list)     run "list-scalefs.sh" "$@";;
+  remove)   run "remove-scalefs.sh" "$@";;
+
+  clone)    run "clone-scalefs.sh" "$@";;
+  move)     run "move-scalefs.sh" "$@";;
+  snapshot) run "snapshot-scalefs.sh" "$@";;
+  sync)     run "sync-scalefs.sh" "$@";;
+
+  *) help; exit 2;;
+esac

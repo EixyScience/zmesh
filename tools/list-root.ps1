@@ -1,0 +1,1 @@
+Get-ChildItem "$HOME\.zmesh\zmesh.d" | Where {$_.Name -like "root.*"}

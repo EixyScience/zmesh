@@ -13,6 +13,7 @@ import (
 	"github.com/EixyScience/zmesh/internal/id"
 	"github.com/EixyScience/zmesh/internal/instance"
 	"github.com/EixyScience/zmesh/internal/membership"
+	"github.com/EixyScience/zmesh/internal/scalefsconf"
 	"github.com/EixyScience/zmesh/internal/transport"
 )
 
@@ -41,24 +42,32 @@ func (a *Agent) Run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// configファイルのディレクトリを取得（-c の zmesh.conf の場所）
-	baseDir := filepath.Dir(a.ConfigPath)
+	// -c の zmesh.conf が置いてある場所を “scalefsRoot” とみなす（MVP）
+	// ZMESH:EXTEND: 将来は scalefs.conf / scalefs.d から複数 root を解決
+	confDir := filepath.Dir(a.ConfigPath)
+	scalefsRoot := confDir
 
-	// まずは “デフォルト” を絶対パスにして注入（paths を config 側に生やしたらここを差し替える）
-	defaults := instance.Paths{
-		StateDir:     absFrom(baseDir, "./zmesh.state"),
-		WatchRoot:    absFrom(baseDir, "./main"),
-		WatchExclude: []string{"./zmesh.state/**"},
+	sp, err := scalefsconf.LoadPaths(scalefsRoot)
+	if err != nil {
+		return err
 	}
 
-	//defaults := instance.Paths{
-	//	StateDir:     absFrom(baseDir, a.Cfg.Paths.StateDir),
-	//	WatchRoot:    absFrom(baseDir, a.Cfg.Paths.WatchRoot),
-	//	WatchExclude: a.Cfg.Paths.WatchExclude,
-	//}
-	//reg := router.NewRegistry(0, defaults)
-	//reg := router.NewRegistryWithDefaults(0, defaults)
-	//rt := router.New(reg)
+	defaults := instance.Paths{
+		StateDir:     absFrom(scalefsRoot, sp.StateDir),
+		WatchRoot:    absFrom(scalefsRoot, sp.WatchRoot),
+		WatchExclude: sp.WatchExclude, // []string のまま
+	}
+
+
+
+ctrl := controller.New(
+	a.Cfg.Node.ID,
+	a.Cfg.ScaleFS.Roots,
+)
+
+go ctrl.Run()
+
+
 
 	// LAN UDP
 	udp := &membership.UDP{
@@ -92,14 +101,13 @@ func (a *Agent) Run() error {
 		return fmt.Errorf("invalid scalefs.id: %w", err)
 	}
 
-	// WAN HTTP (optional)
-	var httpx *transport.HTTP
+	// WAN HTTP
 	if a.Cfg.WAN.Enabled {
 		httpx = &transport.HTTP{
 			Listen:           a.Cfg.WAN.Listen,
 			Peers:            a.Cfg.WAN.Peers,
 			RegistryDefaults: defaults,
-			RegistryTTL:      10 * time.Minute, // lazy instances expire if unused
+			RegistryTTL:      10 * time.Minute,
 		}
 		// ZMESH:TOKEN: automatic claim/renew loop
 		// ZMESH:EXTEND: replace with distributed consensus when orchestration layer is implemented

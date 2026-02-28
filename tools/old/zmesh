@@ -1,0 +1,64 @@
+#!/bin/sh
+set -eu
+
+TOOLDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+help() {
+cat <<'EOF'
+Usage:
+  zmesh <command> [args...]
+
+Commands:
+  init                -> zmesh-init.sh
+  start               -> zmesh-start.sh
+  stop                -> zmesh-stop.sh
+  status              -> zmesh-status.sh
+  doctor              -> doctor.sh
+
+  root add            -> add-root.sh
+  root list           -> list-root.sh
+  root remove         -> remove-root.sh
+
+  scalefs <...>       -> forward to ./scalefs (zmesh scalefs ...)
+
+EOF
+}
+
+run() {
+  f="$1"; shift
+  path="$TOOLDIR/$f"
+  [ -f "$path" ] || { echo "missing script: $f ($path)"; exit 127; }
+  exec "$path" "$@"
+}
+
+[ $# -ge 1 ] || { help; exit 0; }
+case "$1" in
+  -h|--help|help) help; exit 0;;
+esac
+
+cmd="$1"; shift || true
+
+case "$cmd" in
+  init)   run "zmesh-init.sh" "$@";;
+  start)  run "zmesh-start.sh" "$@";;
+  stop)   run "zmesh-stop.sh" "$@";;
+  status) run "zmesh-status.sh" "$@";;
+  doctor) run "doctor.sh" "$@";;
+
+  root)
+    [ $# -ge 1 ] || { help; exit 2; }
+    sub="$1"; shift || true
+    case "$sub" in
+      add)    run "add-root.sh" "$@";;
+      list)   run "list-root.sh" "$@";;
+      remove) run "remove-root.sh" "$@";;
+      *) help; exit 2;;
+    esac
+    ;;
+
+  scalefs)
+    run "scalefs" "$@"
+    ;;
+
+  *) help; exit 2;;
+esac

@@ -1,0 +1,54 @@
+#!/bin/sh
+set -eu
+
+TOOLDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+help() {
+cat <<'EOF'
+Usage:
+  scalefs <command> [args...]
+
+Commands:
+  init     -> scalefs-init.sh
+  mount    -> scalefs-mount.sh
+  umount   -> scalefs-umount.sh
+  add      -> add-scalefs.sh
+  list     -> list-scalefs.sh
+  remove   -> remove-scalefs.sh
+
+advanced:
+  clone    -> clone-scalefs.sh
+  move     -> move-scalefs.sh
+  snapshot -> snapshot-scalefs.sh
+  sync     -> sync-scalefs.sh
+EOF
+}
+
+run() {
+  f="$1"; shift
+  path="$TOOLDIR/$f"
+  [ -f "$path" ] || { echo "missing script: $f ($path)"; exit 127; }
+  exec "$path" "$@"
+}
+
+[ $# -ge 1 ] || { help; exit 0; }
+case "$1" in
+  -h|--help|help) help; exit 0;;
+esac
+
+cmd="$1"; shift || true
+case "$cmd" in
+  init)     run "scalefs-init.sh" "$@";;
+  mount)    run "scalefs-mount.sh" "$@";;
+  umount)   run "scalefs-umount.sh" "$@";;
+  add)      run "add-scalefs.sh" "$@";;
+  list)     run "list-scalefs.sh" "$@";;
+  remove)   run "remove-scalefs.sh" "$@";;
+
+  clone)    run "clone-scalefs.sh" "$@";;
+  move)     run "move-scalefs.sh" "$@";;
+  snapshot) run "snapshot-scalefs.sh" "$@";;
+  sync)     run "sync-scalefs.sh" "$@";;
+
+  *) help; exit 2;;
+esac

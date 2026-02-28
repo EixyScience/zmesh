@@ -1,0 +1,29 @@
+短縮
+長い形式
+意味
+-r
+--root
+ScalefsRoot alias
+-n
+--name
+scalefs名
+-i
+--id
+shortid指定
+-y
+--yes
+確認スキップ
+-q
+--quiet
+非対話モード
+-h
+--help
+ヘルプ
+
+
+-r  --root
+-n  --name
+-i  --id
+-y  --yes
+-q  --quiet
+-h  --help
