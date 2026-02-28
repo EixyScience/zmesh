@@ -4,6 +4,7 @@ set -eu
 . ./common.sh
 
 mkdir -p "$ZCONF_DIR/zmesh.d"
+mkdir -p "$ZCONF_DIR/virtualpath.d"
 
 CONF="$ZCONF_DIR/zmesh.conf"
 

@@ -3,57 +3,102 @@ set -eu
 
 . ./common.sh
 
-ROOT=""
-NAME=""
+ROOT="${ROOT:-}"
+NAME="${NAME:-}"
+ZFS_POOL="${ZFS_POOL:-}"   # optional override
+
+say() { printf "%s\n" "$*"; }
+die() { printf "ERROR: %s\n" "$*" >&2; exit 1; }
 
 printf "Available roots:\n"
 load_roots
 
-printf "Select root: "
-read ROOT
+if [ -z "$ROOT" ]; then
+  printf "Select root: "
+  read ROOT
+fi
 
-PATHVAL=$(load_roots | grep "^$ROOT|" | cut -d'|' -f2)
+PATHVAL="$(load_roots | awk -F'|' -v r="$ROOT" '$1==r{print $2; exit}')"
+[ -n "$PATHVAL" ] || die "unknown root alias: $ROOT"
 
-printf "Name: "
-read NAME
+if [ -z "$NAME" ]; then
+  printf "Name: "
+  read NAME
+fi
 
-NAME=$(normalize_name "$NAME")
-ID=$(gen_shortid)
+NAME="$(normalize_name "$NAME")"
+[ -n "$NAME" ] || die "invalid name"
 
-DIR="$PATHVAL/$NAME.$ID"
+ID="$(gen_shortid)"
+SID="$ID"
+FULL="$NAME.$ID"
 
-mkdir -p "$DIR/main"
-mkdir -p "$DIR/scalefs.state"
-mkdir -p "$DIR/scalefs.global.d"
-mkdir -p "$DIR/scalefs.local.d"
-mkdir -p "$DIR/scalefs.runtime.d"
+DIR="$PATHVAL/$FULL"
+
+mkdir -p "$DIR/main" \
+         "$DIR/scalefs.state" \
+         "$DIR/scalefs.global.d" \
+         "$DIR/scalefs.local.d" \
+         "$DIR/scalefs.runtime.d"
 
 cat > "$DIR/scalefs.ini" <<EOF
-id=$NAME.$ID
+[scalefs]
+id=$FULL
+name=$NAME
+shortid=$SID
+
+[paths]
+state_dir=./scalefs.state
+watch_root=./main
+
+[zfs]
+enabled=false
+pool=
+dataset=
 EOF
 
-# If zfs is available AND PATHVAL is under some zfs mountpoint,
-# create a child dataset and mount it at DIR/main.
+# ---- ZFS path (best effort) ----
 if detect_zfs; then
-  PARENT_DS="$(zfs_dataset_for_path "$PATHVAL" || true)"
-  if [ -n "$PARENT_DS" ]; then
-    DS="$PARENT_DS/$NAME.$ID"
+  POOL=""
 
-    # create dataset (idempotent-ish)
-    if zfs create "$DS" 2>/dev/null; then
-      :
-    else
-      # If already exists, continue; otherwise fail hard.
-      zfs list -H -o name "$DS" >/dev/null 2>&1 || true
-    fi
+  # 1) If PATHVAL is a dataset mountpoint, find its dataset name
+  #    Works on FreeBSD/Linux with zfs get -H -o value -s local,received mountpoint
+  POOL="$(zfs list -H -o name,mountpoint 2>/dev/null | awk -v mp="$PATHVAL" '$2==mp{print $1; exit}' || true)"
 
-    # Ensure mountpoint set (zfs will mount automatically if canmount=on)
-    zfs set mountpoint="$DIR/main" "$DS"
+  # If found dataset at PATHVAL, pool is its top-level pool (first component)
+  if [ -n "$POOL" ]; then
+    POOL="$(printf "%s" "$POOL" | cut -d'/' -f1)"
+  fi
 
-    # record marker for reliable removal
-    marker="$(scalefs_dataset_marker "$DIR")"
-    printf "%s\n" "$DS" > "$marker"
+  # 2) If still empty, use override env
+  if [ -z "$POOL" ] && [ -n "$ZFS_POOL" ]; then
+    POOL="$ZFS_POOL"
+  fi
+
+  if [ -n "$POOL" ]; then
+    BASE="$POOL/scalefs"
+    DS="$BASE/$NAME-$ID"
+
+    # ensure parents + dataset exist
+    zfs create -p "$BASE" >/dev/null 2>&1 || true
+    zfs create -p "$DS"   >/dev/null 2>&1 || true
+
+    # set mountpoint to DIR/main
+    zfs set mountpoint="$DIR/main" "$DS" >/dev/null 2>&1 || true
+    zfs mount "$DS" >/dev/null 2>&1 || true
+
+    # write zfs stanza
+    tmp="$DIR/scalefs.ini.tmp"
+    awk '
+      BEGIN{in=0}
+      /^\[zfs\]/{in=1; print; next}
+      in==1 && /^enabled=/{print "enabled=true"; next}
+      in==1 && /^pool=/{print "pool='"$POOL"'"; next}
+      in==1 && /^dataset=/{print "dataset='"$DS"'"; next}
+      {print}
+    ' "$DIR/scalefs.ini" > "$tmp"
+    mv "$tmp" "$DIR/scalefs.ini"
   fi
 fi
 
-echo "Created $NAME.$ID"
+say "Created $FULL"

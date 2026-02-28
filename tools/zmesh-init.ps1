@@ -9,6 +9,7 @@ $site = Ask "Site" "default"
 
 $configDir="$HOME\.zmesh"
 EnsureDir $configDir
+EnsureDir "$configDir\virtualpath.d"
 
 $config="$configDir\zmesh.conf"
 

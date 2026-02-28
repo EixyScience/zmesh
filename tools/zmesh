@@ -32,16 +32,15 @@ COMMANDS
   doctor      Run environment checks (paths, permissions, zfs availability)
   root        Manage ScaleFS roots (add/list/remove)
   scalefs     Proxy to scalefs tool (run "zmesh scalefs help" for details)
+  virtualpath Manage virtual path rules (add/list/remove/doctor/apply)
   help        Show this help
 
 NOTES
   - To see scalefs help from zmesh:
       zmesh scalefs help
 
-OPTIONS (common)
-  -h, --help        Show help
-  -v, --verbose     Verbose output (if supported by the subcommand)
-  -C, --chdir DIR   Run as if started in DIR (if supported)
+  - To see virtualpath help:
+      zmesh virtualpath help
 
 EXAMPLES
   # Initialize zmesh (interactive)
@@ -51,9 +50,11 @@ EXAMPLES
   zmesh start -c ./zmesh.conf
 
   # Add a new ScaleFS root location
-  zmesh root add -a default -p "$HOME/scalefs"
-EOF
+  zmesh root add
 
+  # Apply virtualpath rules into /vroot, also cleanup stale links
+  zmesh virtualpath apply --root /vroot --clean --yes
+EOF
 }
 
 run() {
@@ -63,7 +64,7 @@ run() {
 }
 
 [ $# -ge 1 ] || { help; exit 0; }
-case "$1" in
+case "${1:-}" in
   -h|--help|help) help; exit 0;;
 esac
 
@@ -82,16 +83,66 @@ case "$cmd" in
     case "$sub" in
       add)    run "add-root.sh" "$@";;
       list)   run "list-root.sh" "$@";;
-      remove) run "remove-root.sh" "$@";;
+      remove|rm) run "remove-root.sh" "$@";;
+      help|-h|--help) help; exit 0;;
       *) help; exit 2;;
     esac
     ;;
 
   scalefs)
-    # scalefs自体も tools/ / 直下のどちらでもOKにする
     spath="$(find_tool "scalefs")" || { echo "missing tool: scalefs"; exit 127; }
     exec "$spath" "$@"
     ;;
 
-  *) help; exit 2;;
+  virtualpath)
+    sub="${1:-help}"; shift || true
+    case "$sub" in
+      add)      run "add-virtualpath.sh" "$@";;
+      list)     run "list-virtualpath.sh" "$@";;
+      remove|rm)run "remove-virtualpath.sh" "$@";;
+      doctor)   run "doctor-virtualpath.sh" "$@";;
+
+      apply)
+        # Preferred name: tools/virtualpath-apply.sh
+        # (Back-compat: tools/apply-virtualpath.sh も探す)
+        if find_tool "virtualpath-apply.sh" >/dev/null 2>&1; then
+          run "virtualpath-apply.sh" "$@"
+        else
+          run "apply-virtualpath.sh" "$@"
+        fi
+        ;;
+
+      help|-h|--help)
+        cat <<'EOF'
+zmesh virtualpath - manage virtual path rules
+
+USAGE
+  zmesh virtualpath <subcommand> [options]
+
+SUBCOMMANDS
+  add         Add a rule file under virtualpath.d/
+  list        List rules
+  remove      Remove a rule
+  doctor      Diagnostics for virtualpath config
+  apply       Apply rules into a vroot (and write manifest; optional --clean)
+
+APPLY EXAMPLES
+  zmesh virtualpath apply --root /vroot
+  zmesh virtualpath apply --root /vroot --clean --yes
+  ZCONF_DIR=/usr/local/etc/zmesh zmesh virtualpath apply --root /vroot --clean --yes
+EOF
+        exit 0
+        ;;
+
+      *)
+        echo "Usage: zmesh virtualpath {add|list|remove|doctor|apply|help}"
+        exit 2
+        ;;
+    esac
+    ;;
+
+  *)
+    help
+    exit 2
+    ;;
 esac
