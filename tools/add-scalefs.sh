@@ -12,7 +12,7 @@ say() { printf "%s\n" "$*"; }
 die() { printf "ERROR: %s\n" "$*" >&2; exit 1; }
 
 printf "Available roots:\n"
-load_roots || true
+resolve_root_path || true
 
 if [ -z "$ROOT" ]; then
   printf "Select root: "
@@ -20,8 +20,12 @@ if [ -z "$ROOT" ]; then
   IFS= read -r ROOT || ROOT=""
 fi
 
-PATHVAL="$(load_roots 2>/dev/null | awk -F'|' -v r="$ROOT" '$1==r{print $2; exit}' || true)"
-[ -n "$PATHVAL" ] || die "unknown root alias: $ROOT"
+#PATHVAL="$(load_roots 2>/dev/null | awk -F'|' -v #r="$ROOT" '$1==r{print $2; exit}' || true)"
+#[ -n "$PATHVAL" ] || die "unknown root alias: $ROOT"
+
+PATHVAL="$(resolve_root_path "$ROOT" || true)"
+[ -n "$PATHVAL" ] || die "unknown root alias or path: $ROOT"
+
 
 if [ -z "$NAME" ]; then
   printf "Name: "

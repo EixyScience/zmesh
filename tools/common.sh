@@ -76,3 +76,34 @@ load_roots() {
   # no files -> no output
   [ "$found" -eq 1 ] || true
 }
+
+
+# common.sh に追加
+
+is_abs_path() {
+  case "$1" in
+    /*) return 0 ;;
+    [A-Za-z]:[\\/]* ) return 0 ;;  # 一応Windows風も
+  esac
+  return 1
+}
+
+resolve_root_path() {
+  # $1 = root spec (alias or path)
+  r="$1"
+
+  # 1) 実在するディレクトリならそれを採用
+  if [ -n "$r" ] && [ -d "$r" ]; then
+    printf "%s\n" "$r"
+    return 0
+  fi
+
+  # 2) alias として roots から引く
+  p="$(load_roots | awk -F'|' -v a="$r" '$1==a{print $2; exit}')"
+  if [ -n "$p" ]; then
+    printf "%s\n" "$p"
+    return 0
+  fi
+
+  return 1
+}

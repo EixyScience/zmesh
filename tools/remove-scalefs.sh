@@ -37,7 +37,7 @@ NAME="$(normalize_name "$NAME")"
 # locate scalefs dir under any root
 found=""
 found_root=""
-load_roots | while IFS='|' read alias path; do
+resolve_root_path | while IFS='|' read alias path; do
   [ -n "$path" ] || continue
   d="$path/$NAME"
   if [ -d "$d" ]; then

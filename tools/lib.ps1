@@ -94,6 +94,107 @@ function VpFileName([string]$vp) {
     return $safe
 }
 
+# ----------------------------
+# Roots / Paths helpers
+# ----------------------------
+
+function Get-ZmeshConfDir {
+    # 1) env: ZCONF_DIR (tests or overrides)
+    if ($env:ZCONF_DIR -and $env:ZCONF_DIR.Trim() -ne "") {
+        return $env:ZCONF_DIR.Trim()
+    }
+    # 2) default (Windows)
+    return (Join-Path $HOME ".zmesh")
+}
+
+function Get-RootConfDir {
+    $z = Get-ZmeshConfDir
+    return (Join-Path $z "zmesh.d")
+}
+
+function Get-Roots {
+    # root.*.conf の形式に対応:
+    #   alias=default
+    #   path=C:\scalefsroot
+    $dir = Get-RootConfDir
+    if (-not (Test-Path $dir)) { return @() }
+
+    $roots = @()
+    Get-ChildItem -Path $dir -Filter "root.*.conf" -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $alias = $null
+        $path  = $null
+        Get-Content $_.FullName | ForEach-Object {
+            $line = $_.Trim()
+            if ($line -match '^\s*alias\s*=\s*(.+)\s*$') { $alias = $Matches[1].Trim() }
+            elseif ($line -match '^\s*path\s*=\s*(.+)\s*$') { $path = $Matches[1].Trim() }
+        }
+        if ($alias -and $path) {
+            $roots += [pscustomobject]@{
+                Alias = $alias
+                Path  = $path
+                File  = $_.FullName
+            }
+        }
+    }
+    return $roots
+}
+
+function Resolve-RootPath {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$RootSpec
+    )
+
+    $r = $RootSpec.Trim()
+    if ($r -eq "") { throw "root spec is empty" }
+
+    # 1) existing directory => treat as path
+    if (Test-Path $r -PathType Container) {
+        return (Resolve-Path $r).Path
+    }
+
+    # 2) alias => lookup
+    $roots = Get-Roots
+    $hit = $roots | Where-Object { $_.Alias -eq $r } | Select-Object -First 1
+    if (-not $hit) { throw "unknown root alias or path: $RootSpec" }
+
+    # path may be relative (rare), normalize
+    if (Test-Path $hit.Path -PathType Container) {
+        return (Resolve-Path $hit.Path).Path
+    }
+    return $hit.Path
+}
+
+function Resolve-ScalefsBodyPath {
+    param(
+        [string]$Id,
+        [string]$RootSpec,
+        [string]$Path
+    )
+    if ($Path -and $Path.Trim() -ne "") {
+        return (Resolve-Path $Path).Path
+    }
+    if (-not $Id -or $Id.Trim() -eq "") {
+        throw "id is required (e.g. democell.17ded8)"
+    }
+
+    if ($RootSpec -and $RootSpec.Trim() -ne "") {
+        $rootPath = Resolve-RootPath $RootSpec
+        return (Join-Path $rootPath $Id)
+    }
+
+    # RootSpec省略時: 全rootsから一意に見つかるならそれを使う
+    $roots = Get-Roots
+    $hits = @()
+    foreach ($rt in $roots) {
+        $p = Join-Path $rt.Path $Id
+        if (Test-Path $p -PathType Container) { $hits += $p }
+    }
+    if ($hits.Count -eq 1) { return $hits[0] }
+    if ($hits.Count -eq 0) { throw "not found in any root: $Id (use -r or -p)" }
+    throw "ambiguous id across roots: $Id (use -r or -p)"
+}
+
 
 
 

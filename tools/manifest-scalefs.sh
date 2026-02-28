@@ -1,251 +1,184 @@
 #!/bin/sh
 set -eu
 
-# manifest-scalefs.sh
-# - Emits a manifest of main/ contents for a scalefs body directory.
-# - Supports non-interactive usage.
-#
-# Requires: sh, find, awk, sed, tr, date, stat (or fallback), and optional hash tools.
-
 . ./common.sh
+
+ID=""
+ROOT=""
+PATHVAL=""
+FMT="json"
 
 say() { printf "%s\n" "$*"; }
 die() { printf "ERROR: %s\n" "$*" >&2; exit 1; }
 
 usage() {
-cat <<'EOF'
-manifest - emit a manifest of main/ (file list + metadata)
+  cat <<'EOF'
+Usage: manifest-scalefs.sh [options]
 
-USAGE
-  scalefs manifest [options]
+Options:
+  -h, --help              Show help
+  -i, --id ID             Target by id (name.shortid)
+  -r, --root ALIAS        Root alias (used with -i)
+  -p, --path PATH         Target by explicit body path
+  -f, --format FMT        json|ini (default: json)
 
-COMMAND + OPTIONS
-  scalefs manifest -p, --path DIR
-      Use explicit scalefs body directory (contains scalefs.ini and main/)
-
-  scalefs manifest -i, --id ID
-      Resolve scalefs body directory by ID (name.shortid) via registered roots
-
-  scalefs manifest -o, --out FILE
-      Write to FILE (default: DIR/scalefs.manifest)
-
-  scalefs manifest --stdout
-      Write to stdout
-
-  scalefs manifest --hash none|sha1|sha256
-      Hash algorithm (default: sha256 if available, else sha1, else none)
-
-  scalefs manifest --no-hash
-      Same as --hash none
-
-  scalefs manifest -h, --help
-      Show this help
-
-EXAMPLES
-  scalefs manifest -p /mnt/zmtest/scalefsroot/democell.17ded8
-  scalefs manifest -i democell.17ded8 --stdout
-  scalefs manifest -i democell.17ded8 -o ./out.manifest --hash sha1
+Examples:
+  manifest-scalefs.sh -p .
+  manifest-scalefs.sh -i democell.28e671 -r test
+  manifest-scalefs.sh -p /mnt/zmtest/scalefsroot/democell.28e671 -f ini
 EOF
 }
 
-# -------------------------
-# resolve scalefs body dir
-# -------------------------
-resolve_by_id() {
-  id="$1"
-  load_roots | while IFS='|' read alias path; do
-    [ -n "$path" ] || continue
-    if [ -d "$path/$id" ]; then
-      printf "%s\n" "$path/$id"
-      return 0
-    fi
-  done
-  return 1
-}
-
-# -------------------------
-# stat helpers (portable-ish)
-# -------------------------
-file_size() {
-  # prints size in bytes
-  f="$1"
-  if command -v stat >/dev/null 2>&1; then
-    # GNU stat
-    if stat -c %s "$f" >/dev/null 2>&1; then
-      stat -c %s "$f"
-      return 0
-    fi
-    # BSD stat
-    if stat -f %z "$f" >/dev/null 2>&1; then
-      stat -f %z "$f"
-      return 0
-    fi
-  fi
-  # fallback: wc -c
-  wc -c <"$f" | tr -d ' '
-}
-
-file_mtime() {
-  # prints mtime as unix seconds
-  f="$1"
-  if command -v stat >/dev/null 2>&1; then
-    # GNU stat
-    if stat -c %Y "$f" >/dev/null 2>&1; then
-      stat -c %Y "$f"
-      return 0
-    fi
-    # BSD stat
-    if stat -f %m "$f" >/dev/null 2>&1; then
-      stat -f %m "$f"
-      return 0
-    fi
-  fi
-  # fallback: date -r (BSD) or perl
-  if date -r "$f" +%s >/dev/null 2>&1; then
-    date -r "$f" +%s
-    return 0
-  fi
-  perl -e 'print((stat($ARGV[0]))[9],"\n")' "$f" 2>/dev/null || echo 0
-}
-
-# -------------------------
-# hash helper
-# -------------------------
-pick_hash() {
-  req="$1"
-  if [ "$req" = "none" ]; then echo "none"; return 0; fi
-  if [ "$req" = "sha256" ]; then
-    if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || command -v openssl >/dev/null 2>&1; then
-      echo "sha256"; return 0
-    fi
-    echo "none"; return 0
-  fi
-  if [ "$req" = "sha1" ]; then
-    if command -v sha1sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || command -v openssl >/dev/null 2>&1; then
-      echo "sha1"; return 0
-    fi
-    echo "none"; return 0
-  fi
-
-  # auto
-  if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || command -v openssl >/dev/null 2>&1; then
-    echo "sha256"; return 0
-  fi
-  if command -v sha1sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || command -v openssl >/dev/null 2>&1; then
-    echo "sha1"; return 0
-  fi
-  echo "none"
-}
-
-do_hash() {
-  algo="$1"
-  f="$2"
-  case "$algo" in
-    none) echo "-" ;;
-    sha256)
-      if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$f" | awk '{print $1}'
-      elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$f" | awk '{print $1}'
-      elif command -v openssl >/dev/null 2>&1; then
-        openssl dgst -sha256 "$f" | awk '{print $2}'
-      else
-        echo "-"
-      fi
-      ;;
-    sha1)
-      if command -v sha1sum >/dev/null 2>&1; then
-        sha1sum "$f" | awk '{print $1}'
-      elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 1 "$f" | awk '{print $1}'
-      elif command -v openssl >/dev/null 2>&1; then
-        openssl dgst -sha1 "$f" | awk '{print $2}'
-      else
-        echo "-"
-      fi
-      ;;
-    *) echo "-" ;;
-  esac
-}
-
-# -------------------------
-# args
-# -------------------------
-DIR=""
-ID=""
-OUT=""
-STDOUT=0
-HASHREQ="auto"
-
+# parse args
 while [ $# -gt 0 ]; do
   case "$1" in
-    -h|--help) usage; exit 0 ;;
-    -p|--path) DIR="${2:-}"; shift 2 ;;
-    -i|--id)   ID="${2:-}"; shift 2 ;;
-    -o|--out)  OUT="${2:-}"; shift 2 ;;
-    --stdout)  STDOUT=1; shift 1 ;;
-    --hash)    HASHREQ="${2:-auto}"; shift 2 ;;
-    --no-hash) HASHREQ="none"; shift 1 ;;
-    *) die "unknown arg: $1 (use --help)" ;;
+    -h|--help) usage; exit 0;;
+    -i|--id) ID="${2:-}"; shift 2;;
+    -r|--root) ROOT="${2:-}"; shift 2;;
+    -p|--path) PATHVAL="${2:-}"; shift 2;;
+    -f|--format) FMT="${2:-}"; shift 2;;
+    *) die "unknown arg: $1";;
   esac
 done
 
-if [ -z "$DIR" ]; then
-  if [ -n "$ID" ]; then
-    DIR="$(resolve_by_id "$ID" || true)"
-    [ -n "$DIR" ] || die "cannot resolve id: $ID (check roots in $ZCONF_DIR/zmesh.d)"
-  else
-    DIR="."
-  fi
-fi
-
-[ -d "$DIR" ] || die "no such dir: $DIR"
-[ -f "$DIR/scalefs.ini" ] || die "not a scalefs body (missing scalefs.ini): $DIR"
-[ -d "$DIR/main" ] || die "missing main/: $DIR/main"
-
-MAIN="$DIR/main"
-
-ALGO="$(pick_hash "$HASHREQ")"
-
-if [ "$STDOUT" -eq 1 ]; then
-  OUTFILE="/dev/stdout"
+# resolve target dir
+if [ -n "$PATHVAL" ]; then
+  DIR="$PATHVAL"
 else
-  if [ -n "$OUT" ]; then
-    OUTFILE="$OUT"
+  [ -n "$ID" ] || die "require --path or --id"
+  if [ -z "$ROOT" ]; then
+    # allow unique match across all roots
+    found=""
+    resolve_root_path | while IFS='|' read alias path; do
+      [ -d "$path/$ID" ] && printf "%s\n" "$path/$ID"
+    done > /tmp/.zmesh_manifest_candidates.$$ 2>/dev/null || true
+    if [ -f /tmp/.zmesh_manifest_candidates.$$ ]; then
+      n="$(wc -l < /tmp/.zmesh_manifest_candidates.$$ | tr -d ' ')"
+      if [ "$n" -eq 1 ]; then
+        found="$(cat /tmp/.zmesh_manifest_candidates.$$)"
+      fi
+      rm -f /tmp/.zmesh_manifest_candidates.$$ || true
+    fi
+    [ -n "$found" ] || die "could not resolve id=$ID (specify --root or --path)"
+    DIR="$found"
   else
-    OUTFILE="$DIR/scalefs.manifest"
+    base="$(resolve_root_path | awk -F'|' -v r="$ROOT" '$1==r{print $2; exit}')"
+    [ -n "$base" ] || die "unknown root alias: $ROOT"
+    DIR="$base/$ID"
   fi
 fi
 
-# -------------------------
-# emit
-# -------------------------
-# format: relpath<TAB>size<TAB>mtime_unix<TAB>hash_or_dash
-# excludes: none (only main/ is scanned)
-#
-# Important: stable ordering (LC_ALL=C sort)
-(
-  say "# scalefs manifest"
-  say "# body_dir=$DIR"
-  say "# main_dir=$MAIN"
-  say "# hash=$ALGO"
-  say "# generated_unix=$(date +%s)"
-  say "# format: path<TAB>size<TAB>mtime_unix<TAB>hash"
+# normalize
+case "$DIR" in
+  .) DIR="$(pwd)";;
+esac
 
-  # find files under main (ignore dirs)
-  # -print0 is not POSIX; keep simple and assume "reasonable" filenames for now.
-  find "$MAIN" -type f 2>/dev/null \
-    | sed "s|^$MAIN/||" \
-    | LC_ALL=C sort \
-    | while IFS= read -r rel; do
-        f="$MAIN/$rel"
-        sz="$(file_size "$f")"
-        mt="$(file_mtime "$f")"
-        hs="$(do_hash "$ALGO" "$f")"
-        printf "%s\t%s\t%s\t%s\n" "$rel" "$sz" "$mt" "$hs"
-      done
-) >"$OUTFILE"
+[ -d "$DIR" ] || die "not a directory: $DIR"
+INI="$DIR/scalefs.ini"
+[ -f "$INI" ] || die "missing scalefs.ini: $INI"
 
-if [ "$STDOUT" -ne 1 ]; then
-  say "OK: wrote $OUTFILE"
+# collect fields (best-effort ini parse)
+get_ini_kv() {
+  sec="$1"; key="$2"
+  awk -v sec="[$sec]" -v key="$key" '
+    BEGIN{in=0}
+    $0==sec{in=1; next}
+    in==1 && /^\[/{exit}
+    in==1{
+      if ($0 ~ "^[[:space:]]*"key"[[:space:]]*=") {
+        sub("^[[:space:]]*"key"[[:space:]]*=","")
+        gsub("\r","")
+        print
+        exit
+      }
+    }
+  ' "$INI"
+}
+
+id="$(get_ini_kv scalefs id)"
+name="$(get_ini_kv scalefs name)"
+shortid="$(get_ini_kv scalefs shortid)"
+
+state_dir="$(get_ini_kv paths state_dir)"
+watch_root="$(get_ini_kv paths watch_root)"
+
+zfs_enabled="$(get_ini_kv zfs enabled)"
+zfs_pool="$(get_ini_kv zfs pool)"
+zfs_dataset="$(get_ini_kv zfs dataset)"
+
+main="$DIR/main"
+state="$DIR/scalefs.state"
+gdir="$DIR/scalefs.global.d"
+ldir="$DIR/scalefs.local.d"
+rdir="$DIR/scalefs.runtime.d"
+
+now="$(date +%s 2>/dev/null || true)"
+os="$(uname -s 2>/dev/null || echo unknown)"
+
+# output
+if [ "$FMT" = "ini" ]; then
+  cat <<EOF
+[manifest]
+generated_unix=$now
+os=$os
+path=$DIR
+
+[scalefs]
+id=$id
+name=$name
+shortid=$shortid
+
+[paths]
+main=$main
+state=$state
+global_d=$gdir
+local_d=$ldir
+runtime_d=$rdir
+
+[config]
+state_dir=$state_dir
+watch_root=$watch_root
+
+[zfs]
+enabled=$zfs_enabled
+pool=$zfs_pool
+dataset=$zfs_dataset
+EOF
+  exit 0
 fi
+
+# default json (no jq dependency)
+esc() {
+  # minimal JSON escaping for \ and "
+  printf "%s" "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+cat <<EOF
+{
+  "ok": true,
+  "generated_unix": $now,
+  "os": "$(esc "$os")",
+  "path": "$(esc "$DIR")",
+  "scalefs": {
+    "id": "$(esc "$id")",
+    "name": "$(esc "$name")",
+    "shortid": "$(esc "$shortid")"
+  },
+  "paths": {
+    "main": "$(esc "$main")",
+    "state": "$(esc "$state")",
+    "global_d": "$(esc "$gdir")",
+    "local_d": "$(esc "$ldir")",
+    "runtime_d": "$(esc "$rdir")"
+  },
+  "config": {
+    "state_dir": "$(esc "$state_dir")",
+    "watch_root": "$(esc "$watch_root")"
+  },
+  "zfs": {
+    "enabled": "$(esc "$zfs_enabled")",
+    "pool": "$(esc "$zfs_pool")",
+    "dataset": "$(esc "$zfs_dataset")"
+  }
+}
+EOF

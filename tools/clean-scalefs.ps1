@@ -1,13 +1,22 @@
-#requires -Version 5.1
+# tools/clean-scalefs.ps1
+# Clean runtime/state artifacts of a scalefs body.
+# Default: safe clean (runtime only).
+# With -Force: also clears common state subdirs.
+# With -Zfs + -Force: attempt zfs unmount/destroy based on scalefs.ini [zfs].
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+. "$PSScriptRoot\lib.ps1"
+
 param(
-  [string]$Path = "",
-  [string]$Id   = "",
+  [string]$Id,
+  [string]$Root,
+  [string]$Path,
   [switch]$DryRun,
   [switch]$Force,
   [switch]$Zfs,
+  [switch]$Yes,
   [switch]$Help
 )
 
@@ -19,132 +28,98 @@ USAGE
   scalefs clean [options]
 
 COMMAND + OPTIONS
-  scalefs clean -Path, -p DIR
-      Explicit scalefs body directory
+  scalefs clean -Path, -p PATH
+      Body directory (contains scalefs.ini). Use '.' for current directory.
 
   scalefs clean -Id,   -i ID
-      Resolve scalefs body directory by ID (name.shortid) via registered roots
+      Body id (name.shortid). Resolved via registered roots.
+
+  scalefs clean -Root, -r ALIAS
+      Root alias to resolve Id (recommended if multiple roots)
 
   scalefs clean -DryRun
       Show what would be removed, do nothing
 
   scalefs clean -Force
-      Allow removing directories/files (still avoids ZFS destroy unless -Zfs)
+      Allow removing state caches/logs (still avoids ZFS destroy unless -Zfs)
 
   scalefs clean -Zfs
-      Also attempt ZFS unmount/destroy if scalefs.ini has [zfs] enabled=true and dataset=...
+      Also attempt ZFS unmount/destroy if scalefs.ini has enabled=true and dataset=...
       Requires -Force. Best-effort.
 
-  scalefs clean -Help
-      Show this help
-
-WHAT IS CLEANED (default)
-  - scalefs.runtime.d\*        (safe)
-  - scalefs.state\tmp*         (safe if exists)
-  - scalefs.state\cache*       (safe if exists)
-  - scalefs.state\logs*        (optional if exists)
+  scalefs clean -Yes
+      Non-interactive (assume yes)
 
 EXAMPLES
-  scalefs clean -Path C:\scalefsroot\democell.17ded8 -DryRun
-  scalefs clean -Id democell.17ded8 -Force
-  scalefs clean -Id democell.17ded8 -Force -Zfs
+  scalefs clean -p .
+  scalefs clean -i democell.28e671 -DryRun
+  scalefs clean -i democell.28e671 -Force -Yes
+  scalefs clean -i democell.28e671 -Force -Zfs -Yes
 "@ | Write-Host
 }
 
 if ($Help) { Show-Help; exit 0 }
 
-function Read-RootConfigs {
-  $confDir = Join-Path $HOME ".zmesh\zmesh.d"
-  if (-not (Test-Path $confDir)) { return @() }
+function Confirm([string]$msg) {
+  if ($Yes) { return $true }
+  $ans = Read-Host "$msg [y/N]"
+  return ($ans -match '^(y|yes)$')
+}
 
-  $files = Get-ChildItem -Path $confDir -Filter "root.*.conf" -File -ErrorAction SilentlyContinue
+function Load-Roots {
+  $confDir = ZmeshConfDir
+  $d = Join-Path $confDir "zmesh.d"
+  if (-not (Test-Path $d)) { return @() }
+
   $roots = @()
-
-  foreach ($f in $files) {
-    $txt = Get-Content -LiteralPath $f.FullName -ErrorAction SilentlyContinue
-    $alias = ($txt | Where-Object { $_ -match '^\s*alias\s*=' } | Select-Object -First 1)
-    $path  = ($txt | Where-Object { $_ -match '^\s*path\s*=' }  | Select-Object -First 1)
-    if ($alias -and $path) {
-      $a = ($alias -replace '^\s*alias\s*=\s*','').Trim()
-      $p = ($path  -replace '^\s*path\s*=\s*','').Trim()
-      if ($a -and $p) {
-        $roots += [pscustomobject]@{ Alias=$a; Path=$p }
-      }
-    }
+  Get-ChildItem $d -Filter "root.*.conf" -File -ErrorAction SilentlyContinue | ForEach-Object {
+    $txt = Get-Content $_.FullName -ErrorAction SilentlyContinue
+    $alias = (($txt | Where-Object { $_ -match '^\s*alias\s*=' } | Select-Object -First 1) -replace '^\s*alias\s*=\s*','').Trim()
+    $path  = (($txt | Where-Object { $_ -match '^\s*path\s*=' }  | Select-Object -First 1) -replace '^\s*path\s*=\s*','').Trim()
+    if ($path) { $roots += [pscustomobject]@{ Alias=$alias; Path=$path } }
   }
   return $roots
 }
 
-function Resolve-ById([string]$id) {
-  foreach ($r in (Read-RootConfigs)) {
-    $d = Join-Path $r.Path $id
-    if (Test-Path $d) { return (Resolve-Path $d).Path }
+function Resolve-BodyPath([string]$id,[string]$rootAlias,[string]$p) {
+  if ($p) {
+    if ($p -eq ".") { return (Get-Location).Path }
+    return (Resolve-Path $p).Path
   }
-  return ""
+  if (-not $id) { throw "require -Path or -Id" }
+
+  $roots = Load-Roots
+  if (-not $roots -or $roots.Count -eq 0) { throw "no roots configured (run: zmesh root add)" }
+
+  if ($rootAlias) {
+    $r = $roots | Where-Object { $_.Alias -eq $rootAlias } | Select-Object -First 1
+    if (-not $r) { throw "unknown root alias: $rootAlias" }
+    return (Join-Path $r.Path $id)
+  }
+
+  $cands = @()
+  foreach ($r in $roots) {
+    $pp = Join-Path $r.Path $id
+    if (Test-Path $pp) { $cands += $pp }
+  }
+  if ($cands.Count -eq 0) { throw "not found: $id" }
+  if ($cands.Count -ne 1) { throw "could not resolve id=$id uniquely (specify -Root or -Path)" }
+  return $cands[0]
 }
 
-function Ini-Get([string]$file, [string]$section, [string]$key) {
-  # tiny INI parser: only key=value, no includes
-  $lines = Get-Content -LiteralPath $file -ErrorAction SilentlyContinue
+function Ini-Get([string]$ini,[string]$section,[string]$key) {
+  $sec = "[$section]"
   $in = $false
-  foreach ($ln in $lines) {
-    $t = $ln.Trim()
-    if ($t -match '^\[') {
-      $in = ($t -ieq "[$section]")
-      continue
-    }
-    if ($in -and $t -match ("^{0}\s*=" -f [regex]::Escape($key))) {
-      return ($t -replace '^[^=]+=', '').Trim()
+  foreach ($line in Get-Content -LiteralPath $ini -ErrorAction SilentlyContinue) {
+    $t = $line.Trim()
+    if ($t -eq $sec) { $in = $true; continue }
+    if ($in -and $t.StartsWith("[")) { break }
+    if ($in -and $t -match ("^\s*"+[regex]::Escape($key)+"\s*=\s*(.*)$")) {
+      return $matches[1].Trim()
     }
   }
   return ""
 }
-
-# Resolve DIR
-$dir = $Path
-if (-not $dir) {
-  if ($Id) {
-    $dir = Resolve-ById $Id
-    if (-not $dir) { throw "cannot resolve id: $Id (check $HOME\.zmesh\zmesh.d\root.*.conf)" }
-  } else {
-    $dir = (Get-Location).Path
-  }
-}
-
-if (-not (Test-Path $dir)) { throw "no such dir: $dir" }
-$ini = Join-Path $dir "scalefs.ini"
-if (-not (Test-Path $ini))  { throw "not a scalefs body (missing scalefs.ini): $dir" }
-
-Write-Host ("clean: dir={0} dry_run={1} force={2} zfs={3}" -f $dir, $DryRun.IsPresent, $Force.IsPresent, $Zfs.IsPresent)
-
-# ZFS optional
-if ($Zfs) {
-  if (-not $Force) { throw "-Zfs requires -Force" }
-
-  $enabled = (Ini-Get $ini "zfs" "enabled")
-  $dataset = (Ini-Get $ini "zfs" "dataset")
-
-  if ($enabled -ieq "true" -and $dataset) {
-    Write-Host "ZFS: dataset=$dataset"
-    if ($DryRun) {
-      Write-Host "ZFS would: zfs umount '$dataset' ; zfs destroy -r '$dataset'"
-    } else {
-      try { & zfs.exe umount $dataset 2>$null | Out-Null } catch {}
-      try { & zfs.exe destroy -r $dataset 2>$null | Out-Null } catch {}
-    }
-  } else {
-    Write-Host "ZFS: not enabled or dataset not set in scalefs.ini; skipping"
-  }
-}
-
-# Targets
-$targets = @(
-  Join-Path $dir "scalefs.runtime.d",
-  Join-Path $dir "scalefs.state\tmp",
-  Join-Path $dir "scalefs.state\cache",
-  Join-Path $dir "scalefs.state\log",
-  Join-Path $dir "scalefs.state\logs"
-)
 
 function Plan([string]$p) {
   if (Test-Path $p) { Write-Host "RM $p" }
@@ -152,26 +127,67 @@ function Plan([string]$p) {
 
 function DoRemove([string]$p) {
   if (-not (Test-Path $p)) { return }
-
-  if (-not $Force) {
-    # safe default: only allow runtime.d
-    if ($p -like (Join-Path $dir "scalefs.runtime.d*")) {
-      Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue
-    } else {
-      Write-Host "SKIP (need -Force) $p"
-    }
-    return
-  }
-
   Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# resolve
+$dir = Resolve-BodyPath $Id $Root $Path
+if (-not (Test-Path $dir)) { throw "not a directory: $dir" }
+
+$ini = Join-Path $dir "scalefs.ini"
+if (-not (Test-Path $ini)) { throw "missing scalefs.ini: $ini" }
+
+$runtime = Join-Path $dir "scalefs.runtime.d"
+$state   = Join-Path $dir "scalefs.state"
+
+$targets = New-Object System.Collections.Generic.List[string]
+$targets.Add($runtime) | Out-Null
+
+if ($Force) {
+  # common state cleanup (best effort)
+  $targets.Add((Join-Path $state "tmp"))   | Out-Null
+  $targets.Add((Join-Path $state "cache")) | Out-Null
+  $targets.Add((Join-Path $state "log"))   | Out-Null
+  $targets.Add((Join-Path $state "logs"))  | Out-Null
+}
+
+$zEnabled = (Ini-Get $ini "zfs" "enabled")
+$zDataset = (Ini-Get $ini "zfs" "dataset")
+
+Write-Host "Target: $dir"
+Write-Host "Plan:"
+foreach ($t in $targets) { Write-Host "  - remove: $t" }
+
+if ($Zfs) {
+  if (-not $Force) { throw "-Zfs requires -Force" }
+  if ($zEnabled -ieq "true" -and $zDataset) {
+    Write-Host "  - zfs destroy: $zDataset"
+  } else {
+    Write-Host "  - zfs destroy: (none)"
+  }
+}
+
+if (-not (Confirm "Proceed?")) { throw "aborted" }
+
 if ($DryRun) {
-  foreach ($p in $targets) { Plan $p }
+  foreach ($t in $targets) { Plan $t }
+  if ($Zfs -and $zEnabled -ieq "true" -and $zDataset) {
+    Write-Host "ZFS would: zfs unmount -f $zDataset ; zfs destroy -r $zDataset"
+  }
   Write-Host "OK: dry-run only"
   exit 0
 }
 
-foreach ($p in $targets) { DoRemove $p }
+# ZFS destroy first (best effort)
+if ($Zfs) {
+  $zfs = Get-Command zfs.exe -ErrorAction SilentlyContinue
+  if ($zfs -and $zEnabled -ieq "true" -and $zDataset) {
+    try { & zfs.exe unmount -f $zDataset 2>$null | Out-Null } catch {}
+    try { & zfs.exe destroy -r $zDataset 2>$null | Out-Null } catch {}
+  }
+}
+
+# Remove files/dirs
+foreach ($t in $targets) { DoRemove $t }
 
 Write-Host "OK: cleaned (best-effort)"

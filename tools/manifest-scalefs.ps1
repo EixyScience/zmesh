@@ -1,155 +1,176 @@
-#requires -Version 5.1
+# tools/manifest-scalefs.ps1
+# Emit a "body manifest" (metadata + paths + config + zfs stanza) for a scalefs body.
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+. "$PSScriptRoot\lib.ps1"
+
 param(
-  [string]$Path = "",
-  [string]$Id   = "",
-  [string]$Out  = "",
-  [switch]$Stdout,
-  [ValidateSet("auto","none","sha1","sha256")]
-  [string]$Hash = "auto",
-  [switch]$NoHash,
+  [string]$Id,
+  [string]$Root,
+  [string]$Path,
+  [ValidateSet("json","ini")] [string]$Format = "json",
   [switch]$Help
 )
 
 function Show-Help {
 @"
-manifest - emit a manifest of main/ (file list + metadata)
+manifest - emit scalefs body manifest (metadata/config summary)
 
 USAGE
   scalefs manifest [options]
 
 COMMAND + OPTIONS
-  scalefs manifest -Path,  -p DIR
-      Explicit scalefs body directory (contains scalefs.ini and main/)
+  scalefs manifest -Path, -p PATH
+      Body directory (contains scalefs.ini). Use '.' for current directory.
 
-  scalefs manifest -Id,    -i ID
-      Resolve scalefs body directory by ID (name.shortid) via registered roots
+  scalefs manifest -Id,   -i ID
+      Body id (name.shortid). Resolved via registered roots.
 
-  scalefs manifest -Out,   -o FILE
-      Write to FILE (default: DIR\scalefs.manifest)
+  scalefs manifest -Root, -r ALIAS
+      Root alias to resolve Id (recommended if multiple roots)
 
-  scalefs manifest -Stdout
-      Write to stdout
-
-  scalefs manifest -Hash auto|none|sha1|sha256
-      Hash algorithm (default: auto)
-
-  scalefs manifest -NoHash
-      Same as -Hash none
-
-  scalefs manifest -Help
-      Show this help
+  scalefs manifest -Format json|ini
+      Output format (default: json)
 
 EXAMPLES
-  scalefs manifest -Path C:\scalefsroot\democell.17ded8
-  scalefs manifest -Id democell.17ded8 -Stdout
-  scalefs manifest -Id democell.17ded8 -Out .\out.manifest -Hash sha1
+  scalefs manifest -p .
+  scalefs manifest -i democell.28e671 -r default
+  scalefs manifest -p C:\scalefsroot\democell.28e671 -Format ini
 "@ | Write-Host
 }
 
 if ($Help) { Show-Help; exit 0 }
-if ($NoHash) { $Hash = "none" }
 
-function Read-RootConfigs {
-  $confDir = Join-Path $HOME ".zmesh\zmesh.d"
-  if (-not (Test-Path $confDir)) { return @() }
+function Load-Roots {
+  $confDir = ZmeshConfDir
+  $d = Join-Path $confDir "zmesh.d"
+  if (-not (Test-Path $d)) { return @() }
 
-  $files = Get-ChildItem -Path $confDir -Filter "root.*.conf" -File -ErrorAction SilentlyContinue
   $roots = @()
-
-  foreach ($f in $files) {
-    $txt = Get-Content -LiteralPath $f.FullName -ErrorAction SilentlyContinue
-    # supports:
-    #   alias=default
-    #   path=C:\scalefsroot
-    $alias = ($txt | Where-Object { $_ -match '^\s*alias\s*=' } | Select-Object -First 1)
-    $path  = ($txt | Where-Object { $_ -match '^\s*path\s*=' }  | Select-Object -First 1)
-    if ($alias -and $path) {
-      $a = ($alias -replace '^\s*alias\s*=\s*','').Trim()
-      $p = ($path  -replace '^\s*path\s*=\s*','').Trim()
-      if ($a -and $p) {
-        $roots += [pscustomobject]@{ Alias=$a; Path=$p }
-      }
-    }
+  Get-ChildItem $d -Filter "root.*.conf" -File -ErrorAction SilentlyContinue | ForEach-Object {
+    $txt = Get-Content $_.FullName -ErrorAction SilentlyContinue
+    $alias = (($txt | Where-Object { $_ -match '^\s*alias\s*=' } | Select-Object -First 1) -replace '^\s*alias\s*=\s*','').Trim()
+    $path  = (($txt | Where-Object { $_ -match '^\s*path\s*=' }  | Select-Object -First 1) -replace '^\s*path\s*=\s*','').Trim()
+    if ($path) { $roots += [pscustomobject]@{ Alias=$alias; Path=$path } }
   }
-
   return $roots
 }
 
-function Resolve-ById([string]$id) {
-  foreach ($r in (Read-RootConfigs)) {
-    $d = Join-Path $r.Path $id
-    if (Test-Path $d) { return (Resolve-Path $d).Path }
+function Resolve-BodyPath([string]$id,[string]$rootAlias,[string]$p) {
+  if ($p) {
+    if ($p -eq ".") { return (Get-Location).Path }
+    return (Resolve-Path $p).Path
+  }
+  if (-not $id) { throw "require -Path or -Id" }
+
+  $roots = Load-Roots
+  if (-not $roots -or $roots.Count -eq 0) { throw "no roots configured (run: zmesh root add)" }
+
+  if ($rootAlias) {
+    $r = $roots | Where-Object { $_.Alias -eq $rootAlias } | Select-Object -First 1
+    if (-not $r) { throw "unknown root alias: $rootAlias" }
+    return (Join-Path $r.Path $id)
+  }
+
+  $cands = @()
+  foreach ($r in $roots) {
+    $pp = Join-Path $r.Path $id
+    if (Test-Path $pp) { $cands += $pp }
+  }
+  if ($cands.Count -eq 0) { throw "not found: $id" }
+  if ($cands.Count -ne 1) { throw "could not resolve id=$id uniquely (specify -Root or -Path)" }
+  return $cands[0]
+}
+
+function Ini-Get([string]$ini,[string]$section,[string]$key) {
+  $sec = "[$section]"
+  $in = $false
+  foreach ($line in Get-Content -LiteralPath $ini -ErrorAction SilentlyContinue) {
+    $t = $line.Trim()
+    if ($t -eq $sec) { $in = $true; continue }
+    if ($in -and $t.StartsWith("[")) { break }
+    if ($in -and $t -match ("^\s*"+[regex]::Escape($key)+"\s*=\s*(.*)$")) {
+      return $matches[1].Trim()
+    }
   }
   return ""
 }
 
-# Resolve DIR
-$dir = $Path
-if (-not $dir) {
-  if ($Id) {
-    $dir = Resolve-ById $Id
-    if (-not $dir) { throw "cannot resolve id: $Id (check $HOME\.zmesh\zmesh.d\root.*.conf)" }
-  } else {
-    $dir = (Get-Location).Path
-  }
-}
+$dir = Resolve-BodyPath $Id $Root $Path
+if (-not (Test-Path $dir)) { throw "not a directory: $dir" }
 
-if (-not (Test-Path $dir)) { throw "no such dir: $dir" }
 $ini = Join-Path $dir "scalefs.ini"
-$main = Join-Path $dir "main"
-if (-not (Test-Path $ini))  { throw "not a scalefs body (missing scalefs.ini): $dir" }
-if (-not (Test-Path $main)) { throw "missing main/: $main" }
+if (-not (Test-Path $ini)) { throw "missing scalefs.ini: $ini" }
 
-# Determine hash algorithm
-$algo = $Hash
-if ($algo -eq "auto") { $algo = "sha256" }
-if ($algo -eq "sha256" -and -not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) { $algo = "none" }
-if ($algo -eq "sha1"   -and -not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) { $algo = "none" }
+$idv   = Ini-Get $ini "scalefs" "id"
+$name  = Ini-Get $ini "scalefs" "name"
+$sid   = Ini-Get $ini "scalefs" "shortid"
 
-function Hash-Of([string]$file) {
-  if ($algo -eq "none") { return "-" }
-  try {
-    $h = Get-FileHash -LiteralPath $file -Algorithm $algo.ToUpperInvariant()
-    return $h.Hash.ToLowerInvariant()
-  } catch {
-    return "-"
+$stateDir  = Ini-Get $ini "paths" "state_dir"
+$watchRoot = Ini-Get $ini "paths" "watch_root"
+
+$zEnabled  = Ini-Get $ini "zfs" "enabled"
+$zPool     = Ini-Get $ini "zfs" "pool"
+$zDataset  = Ini-Get $ini "zfs" "dataset"
+
+$now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$os  = "windows"
+
+$mainPath    = Join-Path $dir "main"
+$statePath   = Join-Path $dir "scalefs.state"
+$globalPath  = Join-Path $dir "scalefs.global.d"
+$localPath   = Join-Path $dir "scalefs.local.d"
+$runtimePath = Join-Path $dir "scalefs.runtime.d"
+
+if ($Format -eq "ini") {
+@"
+[manifest]
+ok=true
+generated_unix=$now
+os=$os
+path=$dir
+
+[scalefs]
+id=$idv
+name=$name
+shortid=$sid
+
+[paths]
+main=$mainPath
+state=$statePath
+global_d=$globalPath
+local_d=$localPath
+runtime_d=$runtimePath
+
+[config]
+state_dir=$stateDir
+watch_root=$watchRoot
+
+[zfs]
+enabled=$zEnabled
+pool=$zPool
+dataset=$zDataset
+"@ | Write-Output
+  exit 0
+}
+
+$obj = [ordered]@{
+  ok = $true
+  generated_unix = $now
+  os = $os
+  path = $dir
+  scalefs = [ordered]@{ id=$idv; name=$name; shortid=$sid }
+  paths = [ordered]@{
+    main = $mainPath
+    state = $statePath
+    global_d = $globalPath
+    local_d = $localPath
+    runtime_d = $runtimePath
   }
+  config = [ordered]@{ state_dir=$stateDir; watch_root=$watchRoot }
+  zfs = [ordered]@{ enabled=$zEnabled; pool=$zPool; dataset=$zDataset }
 }
 
-# Output file selection
-$outFile = $Out
-if ($Stdout) {
-  $outFile = ""
-} elseif (-not $outFile) {
-  $outFile = Join-Path $dir "scalefs.manifest"
-}
-
-# Collect
-$generated = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-$lines = New-Object System.Collections.Generic.List[string]
-$lines.Add("# scalefs manifest")
-$lines.Add("# body_dir=$dir")
-$lines.Add("# main_dir=$main")
-$lines.Add("# hash=$algo")
-$lines.Add("# generated_unix=$generated")
-$lines.Add("# format: path<TAB>size<TAB>mtime_unix<TAB>hash")
-
-$files = Get-ChildItem -Path $main -Recurse -File -ErrorAction SilentlyContinue | Sort-Object FullName
-foreach ($f in $files) {
-  $rel = $f.FullName.Substring($main.Length).TrimStart('\','/')
-  $size = $f.Length
-  $mtime = [DateTimeOffset]$f.LastWriteTimeUtc
-  $mt = $mtime.ToUnixTimeSeconds()
-  $hs = Hash-Of $f.FullName
-  $lines.Add(("{0}`t{1}`t{2}`t{3}" -f $rel, $size, $mt, $hs))
-}
-
-if ($Stdout) {
-  $lines | ForEach-Object { $_ }
-} else {
-  $lines | Set-Content -LiteralPath $outFile -Encoding UTF8
-  Write-Host "OK: wrote $outFile"
-}
+$obj | ConvertTo-Json -Depth 6

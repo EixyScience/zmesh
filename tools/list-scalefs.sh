@@ -2,7 +2,7 @@
 set -eu
 . ./common.sh
 
-load_roots | while IFS='|' read alias path
+resolve_root_path | while IFS='|' read alias path
 do
 
 for d in "$path"/*
