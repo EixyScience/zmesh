@@ -1,10 +1,18 @@
+# tools/repair-wrappers.ps1
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+
+# param を使わない “入口” zmesh.ps1
+$zmeshWrapper = @'
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $toolBase = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 function Show-Help {
-  @"
+@"
 zmesh - orchestrator/agent helper for ScaleFS
 
 USAGE
@@ -23,7 +31,7 @@ COMMANDS
 NOTES
   - To see scalefs help from zmesh:
       zmesh scalefs help
-"@ 
+"@ | Write-Host
 }
 
 function Resolve-ToolPath([string]$name) {
@@ -40,19 +48,19 @@ function Run-Script([string]$name, [string[]]$passArgs) {
   exit $LASTEXITCODE
 }
 
-if (-not $args -or $args.Count -eq 0 -or $args[0] -in @("help", "-h", "--help")) {
+if (-not $args -or $args.Count -eq 0 -or $args[0] -in @("help","-h","--help")) {
   Show-Help
   exit 0
 }
 
-$cmd = [string]$args[0]
+$cmd  = [string]$args[0]
 $rest = @()
-if ($args.Count -gt 1) { $rest = @($args[1..($args.Count - 1)]) }
+if ($args.Count -gt 1) { $rest = @($args[1..($args.Count-1)]) }
 
 switch ($cmd) {
-  "init" { Run-Script "zmesh-init.ps1"   $rest }
-  "start" { Run-Script "zmesh-start.ps1"  $rest }
-  "stop" { Run-Script "zmesh-stop.ps1"   $rest }
+  "init"   { Run-Script "zmesh-init.ps1"   $rest }
+  "start"  { Run-Script "zmesh-start.ps1"  $rest }
+  "stop"   { Run-Script "zmesh-stop.ps1"   $rest }
   "status" { Run-Script "zmesh-status.ps1" $rest }
   "doctor" { Run-Script "doctor.ps1"       $rest }
 
@@ -60,13 +68,13 @@ switch ($cmd) {
     if (-not $rest -or $rest.Count -lt 1) { Show-Help; exit 2 }
     $sub = [string]$rest[0]
     $subArgs = @()
-    if ($rest.Count -gt 1) { $subArgs = @($rest[1..($rest.Count - 1)]) }
+    if ($rest.Count -gt 1) { $subArgs = @($rest[1..($rest.Count-1)]) }
 
     switch ($sub) {
-      "add" { Run-Script "add-root.ps1"    $subArgs }
-      "list" { Run-Script "list-root.ps1"   $subArgs }
+      "add"    { Run-Script "add-root.ps1"    $subArgs }
+      "list"   { Run-Script "list-root.ps1"   $subArgs }
       "remove" { Run-Script "remove-root.ps1" $subArgs }
-      default { Show-Help; exit 2 }
+      default  { Show-Help; exit 2 }
     }
   }
 
@@ -76,3 +84,32 @@ switch ($cmd) {
 
   default { Show-Help; exit 2 }
 }
+'@
+
+# 直下 zmesh.ps1 と tools/zmesh.ps1 を両方上書き
+$targets = @(
+  (Join-Path $repo "zmesh.ps1"),
+  (Join-Path $repo "tools\zmesh.ps1")
+)
+
+foreach ($t in $targets) {
+  $dir = Split-Path -Parent $t
+  if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force $dir | Out-Null }
+
+  # UTF-8 (BOMなし) で確実に書く
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($t, $zmeshWrapper, $utf8NoBom)
+
+  Write-Host "WROTE: $t"
+}
+
+# 検証：先頭50行に "param(" が残っていないことを確認
+foreach ($t in $targets) {
+  $head = (Get-Content -LiteralPath $t -TotalCount 50) -join "`n"
+  if ($head -match '^\s*param\s*\(') {
+    throw "param() still present in: $t"
+  }
+  Write-Host "OK: no param() in head: $t"
+}
+
+Write-Host "DONE. Now run: .\tools\test-all.ps1"

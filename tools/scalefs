@@ -24,32 +24,41 @@ USAGE
   scalefs <command> [options]
 
 COMMANDS
-  init        Create skeleton for a scalefs body in the current directory
-  add         Create a new scalefs body under a registered root (name + shortid)
-  list        List scalefs bodies under registered roots
-  remove      Remove a scalefs body (best-effort; may refuse if mounted)
-  mount       Mount scalefs main (ZFS if available; otherwise no-op/placeholder)
-  umount      Unmount scalefs main (ZFS if available; otherwise no-op/placeholder)
-  snapshot    Create a snapshot (ZFS-only for now)
-  sync        Sync snapshot to peer (ZFS-only placeholder for now)
-  help        Show this help
+  init       Create skeleton for a scalefs body (in current directory)
+  add        Create a new scalefs body under a registered root
+  list       List scalefs bodies under registered roots
+  remove     Remove a scalefs body (best-effort; may refuse if mounted)
+  manifest   Emit a manifest of main/ (file list + metadata)
+  clean      Cleanup runtime/state artifacts (safe by default)
+  mount      Mount scalefs main (ZFS if available; otherwise placeholder)
+  umount     Unmount scalefs main (ZFS if available; otherwise placeholder)
+  snapshot   Create a snapshot (ZFS-only for now)
+  sync       Sync snapshot to peer (ZFS-only placeholder for now)
+  help       Show this help
 
-OPTIONS (typical)
-  -h, --help              Show help
-  -r, --root NAME         Root alias/name (for add/list/remove)
-  -n, --name NAME         Human name (normalized); used with add
-  -i, --id ID             Full scalefs id (name.shortid); used with remove/mount/umount
-  -p, --path PATH         Explicit path (override root resolution) when applicable
+OPTIONS (common)
+  -h, --help   Show help
 
-EXAMPLES
-  # Create a scalefs body under a root (interactive root selection if omitted)
-  scalefs add -r test -n DemoCell
+COMMAND + OPTIONS + EXAMPLES
+  scalefs add -r, --root ROOT  -n, --name NAME
+    EX: scalefs add -r test -n DemoCell
+    EX: ROOT=test NAME=DemoCell scalefs add              (non-interactive env)
 
-  # List scalefs bodies under all roots
-  scalefs list
+  scalefs remove -i, --id ID
+    EX: scalefs remove -i democell.17ded8
+    EX: ID=democell.17ded8 scalefs remove               (non-interactive env)
 
-  # Remove a scalefs body by id
-  scalefs remove -i democell.17ded8
+  scalefs manifest -p, --path DIR | -i, --id ID  [-o, --out FILE] [--stdout] [--hash ALG]
+    EX: scalefs manifest -i democell.17ded8 --stdout
+    EX: scalefs manifest -p /mnt/zmtest/scalefsroot/democell.17ded8 -o ./m.txt
+
+  scalefs clean -p, --path DIR | -i, --id ID  [--dry-run] [--force] [--zfs]
+    EX: scalefs clean -i democell.17ded8 --dry-run
+    EX: scalefs clean -i democell.17ded8 --force --zfs
+
+NOTES
+  - For detailed help per command:
+      scalefs <command> --help
 EOF
 }
 
@@ -67,11 +76,16 @@ esac
 cmd="$1"; shift || true
 case "$cmd" in
   init)     run "scalefs-init.sh" "$@";;
-  mount)    run "scalefs-mount.sh" "$@";;
-  umount)   run "scalefs-umount.sh" "$@";;
+
   add)      run "add-scalefs.sh" "$@";;
   list)     run "list-scalefs.sh" "$@";;
   remove)   run "remove-scalefs.sh" "$@";;
+
+  manifest) run "manifest-scalefs.sh" "$@";;
+  clean)    run "clean-scalefs.sh" "$@";;
+
+  mount)    run "scalefs-mount.sh" "$@";;
+  umount)   run "scalefs-umount.sh" "$@";;
 
   clone)    run "clone-scalefs.sh" "$@";;
   move)     run "move-scalefs.sh" "$@";;
