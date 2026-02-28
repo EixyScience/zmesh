@@ -1,5 +1,5 @@
 param(
-  [Parameter(ValueFromRemainingArguments=$true)]
+  [Parameter(ValueFromRemainingArguments = $true)]
   [string[]]$Args
 )
 
@@ -23,7 +23,7 @@ function Run-Script([string]$name, [string[]]$passArgs) {
 }
 
 function Show-Help {
-@"
+  @"
 zmesh - orchestrator/agent helper for ScaleFS
 
 USAGE
@@ -126,22 +126,22 @@ COMMAND HELP + EXAMPLES
     Examples:
       zmesh apply
       zmesh apply --help
-"@ | Write-Host
+"@ 
 }
 
-if (-not $Args -or $Args[0] -in @("help","-h","--help")) {
+if (-not $Args -or $Args[0] -in @("help", "-h", "--help")) {
   Show-Help
   exit 0
 }
 
 $cmd = $Args[0]
 $rest = @()
-if ($Args.Length -gt 1) { $rest = $Args[1..($Args.Length-1)] }
+if ($Args.Length -gt 1) { $rest = $Args[1..($Args.Length - 1)] }
 
 switch ($cmd) {
-  "init"   { Run-Script "zmesh-init.ps1" $rest }
-  "start"  { Run-Script "zmesh-start.ps1" $rest }
-  "stop"   { Run-Script "zmesh-stop.ps1" $rest }
+  "init" { Run-Script "zmesh-init.ps1" $rest }
+  "start" { Run-Script "zmesh-start.ps1" $rest }
+  "stop" { Run-Script "zmesh-stop.ps1" $rest }
   "status" { Run-Script "zmesh-status.ps1" $rest }
   "doctor" { Run-Script "doctor.ps1" $rest }
 
@@ -149,15 +149,15 @@ switch ($cmd) {
     if (-not $rest -or $rest.Count -lt 1) { Show-Help; exit 2 }
     $sub = $rest[0]
     $subArgs = @()
-    if ($rest.Count -gt 1) { $subArgs = $rest[1..($rest.Count-1)] }
+    if ($rest.Count -gt 1) { $subArgs = $rest[1..($rest.Count - 1)] }
 
     switch ($sub) {
-      "add"    { Run-Script "add-root.ps1"    $subArgs }
-      "list"   { Run-Script "list-root.ps1"   $subArgs }
+      "add" { Run-Script "add-root.ps1"    $subArgs }
+      "list" { Run-Script "list-root.ps1"   $subArgs }
       "remove" { Run-Script "remove-root.ps1" $subArgs }
-      "rm"     { Run-Script "remove-root.ps1" $subArgs }
-      "help"   { Show-Help; exit 0 }
-      default  { Show-Help; exit 2 }
+      "rm" { Run-Script "remove-root.ps1" $subArgs }
+      "help" { Show-Help; exit 0 }
+      default { Show-Help; exit 2 }
     }
   }
 
@@ -173,16 +173,16 @@ switch ($cmd) {
     }
     $sub = $rest[0]
     $subArgs = @()
-    if ($rest.Count -gt 1) { $subArgs = $rest[1..($rest.Count-1)] }
+    if ($rest.Count -gt 1) { $subArgs = $rest[1..($rest.Count - 1)] }
 
     switch ($sub) {
-      "add"    { Run-Script "add-virtualpath.ps1"    $subArgs }
-      "list"   { Run-Script "list-virtualpath.ps1"   $subArgs }
+      "add" { Run-Script "add-virtualpath.ps1"    $subArgs }
+      "list" { Run-Script "list-virtualpath.ps1"   $subArgs }
       "remove" { Run-Script "remove-virtualpath.ps1" $subArgs }
-      "rm"     { Run-Script "remove-virtualpath.ps1" $subArgs }
+      "rm" { Run-Script "remove-virtualpath.ps1" $subArgs }
       "doctor" { Run-Script "doctor-virtualpath.ps1" $subArgs }
-      "help"   { Write-Host "Usage: zmesh virtualpath {add|list|remove|doctor}"; exit 0 }
-      default  { Write-Host "Usage: zmesh virtualpath {add|list|remove|doctor}"; exit 2 }
+      "help" { Write-Host "Usage: zmesh virtualpath {add|list|remove|doctor}"; exit 0 }
+      default { Write-Host "Usage: zmesh virtualpath {add|list|remove|doctor}"; exit 2 }
     }
   }
 

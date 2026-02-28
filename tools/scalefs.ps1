@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 $toolDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 function Show-Help {
-@"
+  @"
 scalefs - ScaleFS local filesystem body helper
 
 USAGE
@@ -96,7 +96,7 @@ COMMAND HELP + EXAMPLES
       scalefs clean -i democell.28e671 -DryRun
       scalefs clean -i democell.28e671 -Force -Yes
       scalefs clean -i democell.28e671 -Force -Zfs -Yes
-"@ | Write-Host
+"@ 
 }
 
 function Resolve-ToolPath([string]$name) {
@@ -123,21 +123,21 @@ $rest = @()
 if ($Args.Length -gt 1) { $rest = $Args[1..($Args.Length - 1)] }
 
 switch ($cmd) {
-  "init"     { Run-Script "scalefs-init.ps1" $rest }
-  "mount"    { Run-Script "scalefs-mount.ps1" $rest }
-  "umount"   { Run-Script "scalefs-umount.ps1" $rest }
+  "init" { Run-Script "scalefs-init.ps1" $rest }
+  "mount" { Run-Script "scalefs-mount.ps1" $rest }
+  "umount" { Run-Script "scalefs-umount.ps1" $rest }
 
-  "add"      { Run-Script "add-scalefs.ps1" $rest }
-  "list"     { Run-Script "list-scalefs.ps1" $rest }
-  "remove"   { Run-Script "remove-scalefs.ps1" $rest }
+  "add" { Run-Script "add-scalefs.ps1" $rest }
+  "list" { Run-Script "list-scalefs.ps1" $rest }
+  "remove" { Run-Script "remove-scalefs.ps1" $rest }
 
   "manifest" { Run-Script "manifest-scalefs.ps1" $rest }
-  "clean"    { Run-Script "clean-scalefs.ps1" $rest }
+  "clean" { Run-Script "clean-scalefs.ps1" $rest }
 
-  "clone"    { Run-Script "clone-scalefs.ps1" $rest }
-  "move"     { Run-Script "move-scalefs.ps1" $rest }
+  "clone" { Run-Script "clone-scalefs.ps1" $rest }
+  "move" { Run-Script "move-scalefs.ps1" $rest }
   "snapshot" { Run-Script "snapshot-scalefs.ps1" $rest }
-  "sync"     { Run-Script "sync-scalefs.ps1" $rest }
+  "sync" { Run-Script "sync-scalefs.ps1" $rest }
 
   default { Show-Help; exit 2 }
 }

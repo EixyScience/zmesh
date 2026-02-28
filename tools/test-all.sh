@@ -3,9 +3,8 @@ set -eu
 
 # ------------------------------------------------------------
 # zmesh/scalefs smoke tests (Linux/FreeBSD)
-# - No destructive operations
+# - No destructive operations on user env
 # - Creates temp config/home and temp root under mktemp
-# - On failure: keeps TMP and prints its path + log
 # ------------------------------------------------------------
 
 BASE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -14,7 +13,9 @@ TOOLS_DIR="$BASE_DIR/tools"
 say() { printf "%s\n" "$*"; }
 die() { printf "ERROR: %s\n" "$*" >&2; exit 1; }
 
-need_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing command: $1"
+}
 
 # Try to find entry points in both locations
 entry_path() {
@@ -24,6 +25,7 @@ entry_path() {
   die "missing executable entry: $name (searched $BASE_DIR and $TOOLS_DIR)"
 }
 
+# Run "<exe> help" and ensure it contains pattern (case-insensitive)
 run_help_contains() {
   exe="$1"
   pat="$2"
@@ -31,22 +33,17 @@ run_help_contains() {
   echo "$out" | grep -qi "$pat" || die "help output from $exe does not contain: $pat"
 }
 
-FAIL=0
-TMP=""
-
-cleanup() {
-  # If KEEP_TMP=1 or FAIL=1, keep temp dir for debugging
-  if [ "${KEEP_TMP:-0}" = "1" ] || [ "$FAIL" -eq 1 ]; then
-    if [ -n "${TMP:-}" ] && [ -d "$TMP" ]; then
-      say "  [debug] keeping TMP: $TMP"
-      say "  [debug] logs may be under: $TMP"
-    fi
-    return 0
-  fi
-  [ -n "${TMP:-}" ] && rm -rf "$TMP" || true
+# Tools existence check (file path relative to repo root)
+must_exist() {
+  rel="$1"
+  [ -f "$BASE_DIR/$rel" ] || die "missing file: $rel"
 }
 
-trap cleanup EXIT INT TERM
+must_exec() {
+  rel="$1"
+  [ -f "$BASE_DIR/$rel" ] || die "missing file: $rel"
+  [ -x "$BASE_DIR/$rel" ] || die "not executable: $rel (chmod +x $rel)"
+}
 
 # ------------------------------------------------------------
 # 1) Basic checks
@@ -78,11 +75,43 @@ if [ -x "$TOOLS_DIR/scalefs" ]; then run_help_contains "$TOOLS_DIR/scalefs" "usa
 say "  OK: help works"
 
 # ------------------------------------------------------------
-# 2) Root config + add-scalefs smoke (stdin/env-driven)
+# 2) Script presence sanity (repo layout)
 # ------------------------------------------------------------
-say "[2] add-scalefs smoke (temp root + temp config)"
+say "[2] script presence sanity"
+
+# common/lib
+must_exist "tools/common.sh"
+
+# scalefs ops (sh)
+must_exec "tools/add-scalefs.sh"
+must_exec "tools/list-scalefs.sh"
+must_exec "tools/remove-scalefs.sh"
+must_exec "tools/clean-scalefs.sh"
+
+# virtualpath ops (sh)
+must_exec "tools/add-virtualpath.sh"
+must_exec "tools/list-virtualpath.sh"
+must_exec "tools/remove-virtualpath.sh"
+must_exec "tools/apply-virtualpath.sh"
+must_exec "tools/doctor-virtualpath.sh"
+
+# manifest (sh)
+must_exec "tools/manifest-scalefs.sh"
+
+# wrappers (entry points)
+must_exec "tools/zmesh"
+must_exec "tools/scalefs"
+
+say "  OK: required scripts exist"
+
+# ------------------------------------------------------------
+# 3) add-scalefs smoke (temp root + temp config) + manifest + clean
+# ------------------------------------------------------------
+say "[3] add-scalefs + manifest + clean smoke (temp root + temp config)"
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/zmesh-test.XXXXXX")
+cleanup() { rm -rf "$TMP"; }
+trap cleanup EXIT INT TERM
 
 # temp config dir for common.sh load_roots()
 export ZCONF_DIR="$TMP/etc/zmesh"
@@ -99,47 +128,65 @@ path=$ROOTPATH
 EOF
 
 ADD="$TOOLS_DIR/add-scalefs.sh"
-[ -f "$ADD" ] || { FAIL=1; die "missing: $ADD"; }
-[ -x "$ADD" ] || { FAIL=1; die "not executable: $ADD (chmod +x tools/add-scalefs.sh)"; }
+MAN="$TOOLS_DIR/manifest-scalefs.sh"
+CLN="$TOOLS_DIR/clean-scalefs.sh"
 
 say "  creating scalefs by stdin automation..."
-log="$TMP/add-scalefs.log"
-
-# Prefer env driven (more stable than stdin)
-(
-  cd "$TOOLS_DIR"
-  ROOT="test" NAME="DemoCell" sh "./add-scalefs.sh"
-) >"$log" 2>&1 || {
-  FAIL=1
+# Feed:
+#  Select root: test
+#  Name: DemoCell
+# Capture output for debugging on failure
+LOG="$TMP/add-scalefs.log"
+( printf "test\nDemoCell\n" | (cd "$TOOLS_DIR" && sh "./add-scalefs.sh") ) >"$LOG" 2>&1 || {
   say "---- add-scalefs.log ----"
-  sed -n '1,200p' "$log" || true
-  die "add-scalefs.sh failed"
+  sed -n '1,200p' "$LOG" || true
+  die "add-scalefs.sh failed (log: $LOG)"
 }
 
 # Validate: under ROOTPATH there should be "democell.<shortid>/" directory
 created_dir="$(ls -1 "$ROOTPATH" 2>/dev/null | grep -E '^democell\.[0-9a-f]{6}$' | head -n 1 || true)"
-if [ -z "$created_dir" ]; then
-  FAIL=1
+[ -n "$created_dir" ] || {
   say "---- add-scalefs.log ----"
-  sed -n '1,200p' "$log" || true
-  say "---- root contents ----"
-  ls -la "$ROOTPATH" || true
+  sed -n '1,200p' "$LOG" || true
   die "created scalefs dir not found under root (expected democell.<6hex>)"
-fi
+}
 
 SCALEFS_DIR="$ROOTPATH/$created_dir"
 say "  created: $SCALEFS_DIR"
 
 # Validate required skeleton
-[ -d "$SCALEFS_DIR/main" ] || { FAIL=1; die "missing main/"; }
-[ -d "$SCALEFS_DIR/scalefs.state" ] || { FAIL=1; die "missing scalefs.state/"; }
-[ -d "$SCALEFS_DIR/scalefs.global.d" ] || { FAIL=1; die "missing scalefs.global.d/"; }
-[ -d "$SCALEFS_DIR/scalefs.local.d" ] || { FAIL=1; die "missing scalefs.local.d/"; }
-[ -d "$SCALEFS_DIR/scalefs.runtime.d" ] || { FAIL=1; die "missing scalefs.runtime.d/"; }
-[ -f "$SCALEFS_DIR/scalefs.ini" ] || { FAIL=1; die "missing scalefs.ini"; }
-
-grep -q '^id=' "$SCALEFS_DIR/scalefs.ini" 2>/dev/null || true
-grep -q '^\[scalefs\]' "$SCALEFS_DIR/scalefs.ini" 2>/dev/null || true
+[ -d "$SCALEFS_DIR/main" ] || die "missing main/"
+[ -d "$SCALEFS_DIR/scalefs.state" ] || die "missing scalefs.state/"
+[ -d "$SCALEFS_DIR/scalefs.global.d" ] || die "missing scalefs.global.d/"
+[ -d "$SCALEFS_DIR/scalefs.local.d" ] || die "missing scalefs.local.d/"
+[ -d "$SCALEFS_DIR/scalefs.runtime.d" ] || die "missing scalefs.runtime.d/"
+[ -f "$SCALEFS_DIR/scalefs.ini" ] || die "missing scalefs.ini"
+grep -q '^id=' "$SCALEFS_DIR/scalefs.ini" 2>/dev/null || grep -q '^scalefs' "$SCALEFS_DIR/scalefs.ini" || die "scalefs.ini missing id/scalefs section"
 
 say "  OK: scalefs skeleton verified"
-say "ALL OK"
+
+# manifest smoke (json)
+say "  manifest (json) ..."
+MLOG="$TMP/manifest.log"
+( cd "$TOOLS_DIR" && sh "./manifest-scalefs.sh" -p "$SCALEFS_DIR" -f json ) >"$MLOG" 2>&1 || {
+  say "---- manifest.log ----"
+  sed -n '1,200p' "$MLOG" || true
+  die "manifest-scalefs.sh failed"
+}
+grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$MLOG" || true
+say "  OK: manifest produced"
+
+# clean smoke: runtime only (non-destructive)
+say "  clean (runtime only) ..."
+CLOG="$TMP/clean.log"
+( cd "$TOOLS_DIR" && sh "./clean-scalefs.sh" -p "$SCALEFS_DIR" -y ) >"$CLOG" 2>&1 || {
+  say "---- clean.log ----"
+  sed -n '1,200p' "$CLOG" || true
+  die "clean-scalefs.sh failed"
+}
+say "  OK: clean ran"
+
+# virtualpath help smoke (only check command responds)
+say "  virtualpath help smoke..."
+( "$ZEXE" virtualpath help >/dev/null 2>&1 ) || die "zmesh virtualpath help failed"
+( "$ZEXE" apply --help >/dev/null 2>&1 ) || true

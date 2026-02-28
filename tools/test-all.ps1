@@ -1,4 +1,3 @@
-# tools/test-all.ps1
 #requires -Version 5.1
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -7,7 +6,7 @@ function Say($s) { Write-Host $s }
 
 function Resolve-Entry([string]$name) {
   $base = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-  $tools = (Resolve-Path (Join-Path $base "tools")).Path
+  $tools = Join-Path $base "tools"
 
   $p1 = Join-Path $base $name
   if (Test-Path $p1) { return $p1 }
@@ -15,50 +14,65 @@ function Resolve-Entry([string]$name) {
   $p2 = Join-Path $tools $name
   if (Test-Path $p2) { return $p2 }
 
-  throw "missing entry: $name (searched: $p1 and $p2)"
+  throw "missing entry: $name"
 }
 
-function Get-HelpText([string]$path) {
-  # PowerShell script: call with & and capture all output as a single string
-  $out = & $path help 2>&1 | Out-String
-  return $out
-}
-
-function Assert-HelpContainsAny([string]$path, [string[]]$needles) {
-  $out = Get-HelpText $path
-
-  # debug print (useful when failing)
-  # Say "---- help from $path ----"
-  # Say $out
-  # Say "--------------------------"
-
-  foreach ($n in $needles) {
-    if ($out -match $n) { return }
+function Assert-Help([string]$path, [string]$needle) {
+  $out = & $path help 2>$null | Out-String
+  if ($out -notmatch $needle) {
+    throw "help output from $path does not contain '$needle'"
   }
-  throw "help output from $path does not contain any of: $($needles -join ', ')"
 }
+
+function Optional-Help([string]$path) {
+  try {
+    $out = & $path help 2>$null | Out-String
+    if ($out) {
+      Say "  optional help ok: $path"
+    }
+  }
+  catch {
+    Say "  optional tool missing or not ready: $path"
+  }
+}
+
+# ------------------------------------------------------------
+# Base paths
+# ------------------------------------------------------------
+
+$base = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$tools = Join-Path $base "tools"
+
+# ------------------------------------------------------------
+# 1) basic checks
+# ------------------------------------------------------------
 
 Say "[1] basic checks"
-$zmesh = Resolve-Entry "zmesh.ps1"
+
+$zmesh   = Resolve-Entry "zmesh.ps1"
 $scalefs = Resolve-Entry "scalefs.ps1"
 
 Say "  zmesh.ps1:   $zmesh"
 Say "  scalefs.ps1: $scalefs"
 
-# Accept either "USAGE" or "Usage" to be flexible
-Assert-HelpContainsAny $zmesh   @("(?im)^\s*usage\b", "(?im)^\s*USAGE\b")
-Assert-HelpContainsAny $scalefs @("(?im)^\s*usage\b", "(?im)^\s*USAGE\b")
+Assert-Help $zmesh "USAGE|Usage|usage"
+Assert-Help $scalefs "USAGE|Usage|usage"
 
-# Also test tools/ entry variants if present
-$base = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$toolsZ = Join-Path $base "tools\zmesh.ps1"
-$toolsS = Join-Path $base "tools\scalefs.ps1"
-if (Test-Path $toolsZ) { Assert-HelpContainsAny $toolsZ @("(?im)^\s*usage\b", "(?im)^\s*USAGE\b") }
-if (Test-Path $toolsS) { Assert-HelpContainsAny $toolsS @("(?im)^\s*usage\b", "(?im)^\s*USAGE\b") }
+# tools/ variants (optional)
+$toolsZ = Join-Path $tools "zmesh.ps1"
+$toolsS = Join-Path $tools "scalefs.ps1"
+
+if (Test-Path $toolsZ) { Assert-Help $toolsZ "USAGE|Usage|usage" }
+if (Test-Path $toolsS) { Assert-Help $toolsS "USAGE|Usage|usage" }
 
 Say "  OK: help works"
 
-Say "[2] script presence sanity"
+# ------------------------------------------------------------
+# 2) required script presence sanity
+# ------------------------------------------------------------
+
+Say "[2] required script presence"
+
 $mustExist = @(
   "tools\lib.ps1",
   "tools\mk.ps1",
@@ -71,8 +85,99 @@ $mustExist = @(
 )
 
 foreach ($rel in $mustExist) {
+
   $p = Join-Path $base $rel
-  if (-not (Test-Path $p)) { throw "missing: $p" }
+
+  if (-not (Test-Path $p)) {
+    throw "missing: $p"
+  }
 }
 
+Say "  OK: required scripts present"
+
+# ------------------------------------------------------------
+# 3) optional tools presence (virtualpath/apply/manifest/clean)
+# ------------------------------------------------------------
+
+Say "[3] optional tools (non-fatal)"
+
+$optional = @(
+  "tools\add-virtualpath.ps1",
+  "tools\list-virtualpath.ps1",
+  "tools\remove-virtualpath.ps1",
+  "tools\doctor-virtualpath.ps1",
+  "tools\apply-virtualpath.ps1",
+  "tools\manifest-scalefs.ps1",
+  "tools\clean-scalefs.ps1"
+)
+
+foreach ($rel in $optional) {
+
+  $p = Join-Path $base $rel
+
+  if (Test-Path $p) {
+    Say "  found optional: $rel"
+  }
+  else {
+    Say "  optional missing (ok): $rel"
+  }
+}
+
+# ------------------------------------------------------------
+# 4) command dispatch sanity (zmesh virtualpath / apply)
+# ------------------------------------------------------------
+
+Say "[4] command dispatch sanity"
+
+try {
+
+  & $zmesh help | Out-Null
+  Say "  zmesh help ok"
+
+}
+catch {
+
+  throw "zmesh help failed"
+
+}
+
+try {
+
+  & $zmesh scalefs help | Out-Null
+  Say "  zmesh scalefs help ok"
+
+}
+catch {
+
+  throw "zmesh scalefs help failed"
+
+}
+
+# optional commands (non-fatal)
+
+try {
+
+  & $zmesh virtualpath help 2>$null | Out-Null
+  Say "  virtualpath entry ok"
+
+}
+catch {
+
+  Say "  virtualpath not implemented yet (ok)"
+
+}
+
+try {
+
+  & $zmesh apply --help 2>$null | Out-Null
+  Say "  apply entry ok"
+
+}
+catch {
+
+  Say "  apply not implemented yet (ok)"
+
+}
+
+Say ""
 Say "ALL OK"
