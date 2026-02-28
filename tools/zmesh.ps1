@@ -10,30 +10,38 @@ $toolDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 function Show-Help {
 @"
-Usage:
-  zmesh <command> [args...]
+zmesh - orchestrator/agent helper for ScaleFS
 
-Commands:
-  init                -> zmesh-init.ps1
-  start               -> zmesh-start.ps1
-  stop                -> zmesh-stop.ps1
-  status              -> zmesh-status.ps1
-  doctor              -> doctor.ps1
+USAGE
+  zmesh <command> [options]
 
-  root add            -> add-root.ps1
-  root list           -> list-root.ps1
-  root remove         -> remove-root.ps1
+COMMANDS
+  init        Initialize zmesh config skeleton (creates/updates zmesh.conf and zmesh.d/)
+  start       Start zmesh agent (foreground)
+  stop        Stop zmesh agent (best-effort)
+  status      Show local status / quick diagnostics
+  doctor      Run environment checks (paths, permissions, zfs availability)
+  root        Manage ScaleFS roots (add/list/remove)
+  scalefs     Proxy to scalefs tool (run "zmesh scalefs help" for details)
+  help        Show this help
 
-  scalefs <...>       -> forward to scalefs.ps1 (zmesh scalefs ...)
+NOTES
+  - To see scalefs help from zmesh:
+      zmesh scalefs help
 
-Examples:
-  .\zmesh.ps1 init
-  .\zmesh.ps1 start
-  .\zmesh.ps1 root add
-  .\zmesh.ps1 scalefs add
-  .\zmesh.ps1 scalefs list
-"@
+OPTIONS (common)
+  -h, --help        Show help
+  -v, --verbose     Verbose output (if supported)
+  -C, --chdir DIR   Run as if started in DIR (if supported)
+
+EXAMPLES
+  zmesh init
+  zmesh start -c .\zmesh.conf
+  zmesh root add -a default -p "$HOME\scalefs"
+"@ | Write-Host
 }
+
+
 
 function Resolve-ToolPath([string]$name) {
   $p1 = Join-Path $toolDir ("tools\" + $name)

@@ -56,3 +56,38 @@ print name "|" path
 done
 
 }
+
+# -----------------------------
+# ZFS helpers
+# -----------------------------
+
+# Find the ZFS dataset whose mountpoint is the longest prefix of $1.
+# Prints dataset name, or empty if none.
+zfs_dataset_for_path() {
+  p="$1"
+  [ -n "$p" ] || { echo ""; return 0; }
+
+  # Normalize to absolute-ish path if possible (no realpath requirement).
+  # Keep as-is; match by prefix on mountpoint.
+  zfs list -H -o name,mountpoint 2>/dev/null | awk -v P="$p" '
+    BEGIN { best=""; bestlen=0; }
+    {
+      ds=$1; mp=$2;
+      if (mp == "-" || mp == "none") next;
+      # prefix match: P starts with mp (and boundary)
+      if (index(P, mp) == 1) {
+        l=length(mp);
+        if (l > bestlen) { best=ds; bestlen=l; }
+      }
+    }
+    END { print best; }
+  '
+}
+
+# Marker file storing dataset name if main/ is a ZFS mountpoint.
+# Keep in runtime.d (machine-managed).
+scalefs_dataset_marker() {
+  dir="$1"
+  echo "$dir/scalefs.runtime.d/zfs.dataset"
+}
+

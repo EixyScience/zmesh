@@ -19,25 +19,41 @@ find_tool() {
 
 help() {
 cat <<'EOF'
-Usage:
-  zmesh <command> [args...]
+zmesh - orchestrator/agent helper for ScaleFS
 
-Commands:
-  init                -> zmesh-init.sh
-  start               -> zmesh-start.sh
-  stop                -> zmesh-stop.sh
-  status              -> zmesh-status.sh
-  doctor              -> doctor.sh
+USAGE
+  zmesh <command> [options]
 
-  root add            -> add-root.sh
-  root list           -> list-root.sh
-  root remove         -> remove-root.sh
+COMMANDS
+  init        Initialize zmesh config skeleton (creates/updates zmesh.conf and zmesh.d/)
+  start       Start zmesh agent (foreground)
+  stop        Stop zmesh agent (best-effort)
+  status      Show local status / quick diagnostics
+  doctor      Run environment checks (paths, permissions, zfs availability)
+  root        Manage ScaleFS roots (add/list/remove)
+  scalefs     Proxy to scalefs tool (run "zmesh scalefs help" for details)
+  help        Show this help
 
-  scalefs <...>       -> forward to ./scalefs
+NOTES
+  - To see scalefs help from zmesh:
+      zmesh scalefs help
 
-Notes:
-  - Tools can live either in repository root or under ./tools/
+OPTIONS (common)
+  -h, --help        Show help
+  -v, --verbose     Verbose output (if supported by the subcommand)
+  -C, --chdir DIR   Run as if started in DIR (if supported)
+
+EXAMPLES
+  # Initialize zmesh (interactive)
+  zmesh init
+
+  # Start agent using a specific config file (example)
+  zmesh start -c ./zmesh.conf
+
+  # Add a new ScaleFS root location
+  zmesh root add -a default -p "$HOME/scalefs"
 EOF
+
 }
 
 run() {

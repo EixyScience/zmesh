@@ -18,25 +18,38 @@ find_tool() {
 
 help() {
 cat <<'EOF'
-Usage:
-  scalefs <command> [args...]
+scalefs - ScaleFS local filesystem body helper
 
-Commands:
-  init     -> scalefs-init.sh
-  mount    -> scalefs-mount.sh
-  umount   -> scalefs-umount.sh
-  add      -> add-scalefs.sh
-  list     -> list-scalefs.sh
-  remove   -> remove-scalefs.sh
+USAGE
+  scalefs <command> [options]
 
-advanced:
-  clone    -> clone-scalefs.sh
-  move     -> move-scalefs.sh
-  snapshot -> snapshot-scalefs.sh
-  sync     -> sync-scalefs.sh
+COMMANDS
+  init        Create skeleton for a scalefs body in the current directory
+  add         Create a new scalefs body under a registered root (name + shortid)
+  list        List scalefs bodies under registered roots
+  remove      Remove a scalefs body (best-effort; may refuse if mounted)
+  mount       Mount scalefs main (ZFS if available; otherwise no-op/placeholder)
+  umount      Unmount scalefs main (ZFS if available; otherwise no-op/placeholder)
+  snapshot    Create a snapshot (ZFS-only for now)
+  sync        Sync snapshot to peer (ZFS-only placeholder for now)
+  help        Show this help
 
-Notes:
-  - Tools can live either in repository root or under ./tools/
+OPTIONS (typical)
+  -h, --help              Show help
+  -r, --root NAME         Root alias/name (for add/list/remove)
+  -n, --name NAME         Human name (normalized); used with add
+  -i, --id ID             Full scalefs id (name.shortid); used with remove/mount/umount
+  -p, --path PATH         Explicit path (override root resolution) when applicable
+
+EXAMPLES
+  # Create a scalefs body under a root (interactive root selection if omitted)
+  scalefs add -r test -n DemoCell
+
+  # List scalefs bodies under all roots
+  scalefs list
+
+  # Remove a scalefs body by id
+  scalefs remove -i democell.17ded8
 EOF
 }
 

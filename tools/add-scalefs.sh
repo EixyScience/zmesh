@@ -7,7 +7,6 @@ ROOT=""
 NAME=""
 
 printf "Available roots:\n"
-
 load_roots
 
 printf "Select root: "
@@ -33,18 +32,28 @@ cat > "$DIR/scalefs.ini" <<EOF
 id=$NAME.$ID
 EOF
 
+# If zfs is available AND PATHVAL is under some zfs mountpoint,
+# create a child dataset and mount it at DIR/main.
 if detect_zfs; then
+  PARENT_DS="$(zfs_dataset_for_path "$PATHVAL" || true)"
+  if [ -n "$PARENT_DS" ]; then
+    DS="$PARENT_DS/$NAME.$ID"
 
-POOL=$(zfs list -H -o name "$PATHVAL" 2>/dev/null || true)
+    # create dataset (idempotent-ish)
+    if zfs create "$DS" 2>/dev/null; then
+      :
+    else
+      # If already exists, continue; otherwise fail hard.
+      zfs list -H -o name "$DS" >/dev/null 2>&1 || true
+    fi
 
-if [ -n "$POOL" ]; then
+    # Ensure mountpoint set (zfs will mount automatically if canmount=on)
+    zfs set mountpoint="$DIR/main" "$DS"
 
-zfs create "$POOL/$NAME.$ID" || true
-
-zfs set mountpoint="$DIR/main" "$POOL/$NAME.$ID"
-
-fi
-
+    # record marker for reliable removal
+    marker="$(scalefs_dataset_marker "$DIR")"
+    printf "%s\n" "$DS" > "$marker"
+  fi
 fi
 
 echo "Created $NAME.$ID"

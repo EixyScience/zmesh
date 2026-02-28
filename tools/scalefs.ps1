@@ -8,23 +8,34 @@ $toolDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 function Show-Help {
 @"
-Usage:
-  scalefs <command> [args...]
+scalefs - ScaleFS local filesystem body helper
 
-Commands:
-  init     -> scalefs-init.ps1
-  mount    -> scalefs-mount.ps1
-  umount   -> scalefs-umount.ps1
-  add      -> add-scalefs.ps1
-  list     -> list-scalefs.ps1
-  remove   -> remove-scalefs.ps1
+USAGE
+  scalefs <command> [options]
 
-(advanced)
-  clone    -> clone-scalefs.ps1
-  move     -> move-scalefs.ps1
-  snapshot -> snapshot-scalefs.ps1
-  sync     -> sync-scalefs.ps1
-"@
+COMMANDS
+  init        Create skeleton for a scalefs body in the current directory
+  add         Create a new scalefs body under a registered root (name + shortid)
+  list        List scalefs bodies under registered roots
+  remove      Remove a scalefs body (best-effort; may refuse if mounted)
+  mount       Mount scalefs main (ZFS if available; otherwise no-op/placeholder)
+  umount      Unmount scalefs main (ZFS if available; otherwise no-op/placeholder)
+  snapshot    Create a snapshot (ZFS-only for now)
+  sync        Sync snapshot to peer (ZFS-only placeholder for now)
+  help        Show this help
+
+OPTIONS (typical)
+  -h, --help              Show help
+  -r, --root NAME         Root alias/name (for add/list/remove)
+  -n, --name NAME         Human name (normalized); used with add
+  -i, --id ID             Full scalefs id (name.shortid); used with remove/mount/umount
+  -p, --path PATH         Explicit path (override root resolution) when applicable
+
+EXAMPLES
+  scalefs add -r test -n DemoCell
+  scalefs list
+  scalefs remove -i democell.17ded8
+"@ | Write-Host
 }
 
 function Resolve-ToolPath([string]$name) {
