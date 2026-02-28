@@ -72,7 +72,17 @@ ADD="$TOOLS_DIR/add-scalefs.sh"
 [ -x "$ADD" ] || die "not executable: $ADD (chmod +x tools/add-scalefs.sh)"
 
 say "  creating scalefs by stdin automation..."
-printf "test\nDemoCell\n" | (cd "$TOOLS_DIR" && sh "./add-scalefs.sh") >/dev/null 2>&1 || die "add-scalefs.sh failed"
+
+log="$TMP/add-scalefs.log"
+(
+  cd "$TOOLS_DIR"
+  ROOT="test" NAME="DemoCell" sh "./add-scalefs.sh"
+) >"$log" 2>&1 || {
+  say "---- add-scalefs.log ----"
+  sed -n '1,200p' "$log" || true
+  die "add-scalefs.sh failed"
+}
+
 
 # Validate: under ROOTPATH there should be "democell.<something>/" directory
 # Be tolerant: shortid length/charset can vary by platform/tool availability.
