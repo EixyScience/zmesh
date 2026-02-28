@@ -1,23 +1,14 @@
 #!/bin/sh
 set -eu
 
-# ------------------------------------------------------------
-# zmesh/scalefs smoke tests (Linux/FreeBSD)
-# - No destructive operations
-# - Creates temp config/home and temp root under mktemp
-# ------------------------------------------------------------
-
 BASE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 TOOLS_DIR="$BASE_DIR/tools"
 
 say() { printf "%s\n" "$*"; }
 die() { printf "ERROR: %s\n" "$*" >&2; exit 1; }
 
-need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || die "missing command: $1"
-}
+need_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
 
-# Try to find entry points in both locations
 entry_path() {
   name="$1"
   if [ -x "$BASE_DIR/$name" ]; then echo "$BASE_DIR/$name"; return 0; fi
@@ -32,8 +23,6 @@ run_help_contains() {
   echo "$out" | grep -qi "$pat" || die "help output from $exe does not contain: $pat"
 }
 
-# ------------------------------------------------------------
-# 1) Basic checks
 # ------------------------------------------------------------
 say "[1] basic checks"
 need_cmd sh
@@ -55,75 +44,93 @@ say "  scalefs: $SEXE"
 run_help_contains "$ZEXE" "usage"
 run_help_contains "$SEXE" "usage"
 
-# Also confirm tools/ entry scripts work too (if executable)
+# Tools entry (optional)
 if [ -x "$TOOLS_DIR/zmesh" ]; then run_help_contains "$TOOLS_DIR/zmesh" "usage"; fi
 if [ -x "$TOOLS_DIR/scalefs" ]; then run_help_contains "$TOOLS_DIR/scalefs" "usage"; fi
 
 say "  OK: help works"
 
 # ------------------------------------------------------------
-# 2) Root config + add-scalefs smoke (stdin-driven)
-# ------------------------------------------------------------
 say "[2] add-scalefs smoke (temp root + temp config)"
-
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/zmesh-test.XXXXXX")
-
-created_dir=""
-cleanup() {
-  # If scalefs was created, remove via tool (handles zfs destroy via marker)
-  if [ -n "$created_dir" ]; then
-    # remove-scalefs.sh is interactive; feed name via stdin
-    printf "%s\n" "$created_dir" | (cd "$TOOLS_DIR" && sh ./remove-scalefs.sh) >/dev/null 2>&1 || true
-  fi
-  rm -rf "$TMP" >/dev/null 2>&1 || true
-}
+cleanup() { rm -rf "$TMP" >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM
 
-
-
-# temp config dir for common.sh load_roots()
 export ZCONF_DIR="$TMP/etc/zmesh"
 mkdir -p "$ZCONF_DIR/zmesh.d"
 
-# temp root path for scalefs bodies
 ROOTPATH="$TMP/scalefsroot"
 mkdir -p "$ROOTPATH"
 
-# root config format expected by common.sh: [root "NAME"] + path=
 cat > "$ZCONF_DIR/zmesh.d/root.test.conf" <<EOF
 [root "test"]
 path=$ROOTPATH
 EOF
 
-# run add-scalefs.sh from tools (it uses ". ./common.sh")
 ADD="$TOOLS_DIR/add-scalefs.sh"
 [ -f "$ADD" ] || die "missing: $ADD"
 [ -x "$ADD" ] || die "not executable: $ADD (chmod +x tools/add-scalefs.sh)"
 
-# Feed answers:
-#  - Select root: test
-#  - Name: DemoCell
 say "  creating scalefs by stdin automation..."
 printf "test\nDemoCell\n" | (cd "$TOOLS_DIR" && sh "./add-scalefs.sh") >/dev/null 2>&1 || die "add-scalefs.sh failed"
 
-# Validate: under ROOTPATH there should be "democell.<shortid>/" directory
 created_dir="$(ls -1 "$ROOTPATH" 2>/dev/null | grep -E '^democell\.[0-9a-f]{6}$' | head -n 1 || true)"
 [ -n "$created_dir" ] || die "created scalefs dir not found under root (expected democell.<6hex>)"
 
 SCALEFS_DIR="$ROOTPATH/$created_dir"
 say "  created: $SCALEFS_DIR"
 
-# Validate required skeleton
 [ -d "$SCALEFS_DIR/main" ] || die "missing main/"
 [ -d "$SCALEFS_DIR/scalefs.state" ] || die "missing scalefs.state/"
 [ -d "$SCALEFS_DIR/scalefs.global.d" ] || die "missing scalefs.global.d/"
 [ -d "$SCALEFS_DIR/scalefs.local.d" ] || die "missing scalefs.local.d/"
 [ -d "$SCALEFS_DIR/scalefs.runtime.d" ] || die "missing scalefs.runtime.d/"
 [ -f "$SCALEFS_DIR/scalefs.ini" ] || die "missing scalefs.ini"
-
-# Validate scalefs.ini contains id=...
 grep -q '^id=' "$SCALEFS_DIR/scalefs.ini" || die "scalefs.ini missing id="
 
 say "  OK: scalefs skeleton verified"
+
+# ------------------------------------------------------------
+say "[3] virtualpath smoke (conf add/list/apply(dry-run)/remove)"
+
+# Ensure tools exist
+for t in add-virtualpath.sh list-virtualpath.sh remove-virtualpath.sh doctor-virtualpath.sh apply-virtualpath.sh; do
+  [ -f "$TOOLS_DIR/$t" ] || die "missing: tools/$t"
+  [ -x "$TOOLS_DIR/$t" ] || die "not executable: tools/$t (chmod +x)"
+done
+
+# prepare vroot and vpath rule
+VROOT="$TMP/vroot"
+mkdir -p "$VROOT"
+
+# conf dir
+mkdir -p "$ZCONF_DIR/virtualpath.d"
+
+# add vpath rule (non-interactive)
+VP="hobby/car"
+TARGET="$SCALEFS_DIR/main"
+( cd "$TOOLS_DIR" && \
+  ZCONF_DIR="$ZCONF_DIR" sh ./add-virtualpath.sh --vpath "$VP" --target "$TARGET" --yes ) >/dev/null
+
+# list should contain it
+out="$( (cd "$TOOLS_DIR" && ZCONF_DIR="$ZCONF_DIR" sh ./list-virtualpath.sh ) )"
+echo "$out" | grep -q "$VP" || die "virtualpath list missing vpath=$VP"
+echo "$out" | grep -q "$TARGET" || die "virtualpath list missing target=$TARGET"
+
+# doctor should pass
+( cd "$TOOLS_DIR" && ZCONF_DIR="$ZCONF_DIR" sh ./doctor-virtualpath.sh --check-targets ) >/dev/null || die "doctor-virtualpath failed"
+
+# apply dry-run should succeed
+( cd "$TOOLS_DIR" && ZCONF_DIR="$ZCONF_DIR" sh ./apply-virtualpath.sh --root "$VROOT" --dry-run --yes ) >/dev/null || die "apply-virtualpath dry-run failed"
+
+# remove rule
+( cd "$TOOLS_DIR" && \
+  ZCONF_DIR="$ZCONF_DIR" sh ./remove-virtualpath.sh --vpath "$VP" --yes ) >/dev/null
+
+# list should not contain it
+out2="$( (cd "$TOOLS_DIR" && ZCONF_DIR="$ZCONF_DIR" sh ./list-virtualpath.sh ) )"
+echo "$out2" | grep -q "$VP" && die "virtualpath remove failed: still present"
+
+say "  OK: virtualpath skeleton verified"
 
 say "ALL OK"

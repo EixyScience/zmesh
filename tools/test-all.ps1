@@ -3,6 +3,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 function Say($s) { Write-Host $s }
+function Die($s) { throw $s }
 
 function Resolve-Entry([string]$name) {
   $base = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -52,12 +53,66 @@ $mustExist = @(
   "tools\list-root.ps1",
   "tools\list-scalefs.ps1",
   "tools\remove-root.ps1",
-  "tools\remove-scalefs.ps1"
+  "tools\remove-scalefs.ps1",
+
+  "tools\add-virtualpath.ps1",
+  "tools\list-virtualpath.ps1",
+  "tools\remove-virtualpath.ps1",
+  "tools\doctor-virtualpath.ps1",
+  "tools\apply-virtualpath.ps1"
 )
 
 foreach ($rel in $mustExist) {
   $p = Join-Path $base $rel
   if (-not (Test-Path $p)) { throw "missing: $p" }
+}
+
+Say "  OK: scripts exist"
+
+Say "[3] virtualpath smoke (temp config + apply dry-run)"
+
+# temp dirs
+$tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("zmesh-test." + ([guid]::NewGuid().ToString("N")).Substring(0,6))
+New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
+
+try {
+  $env:ZCONF_DIR = Join-Path $tmpRoot "etc\zmesh"
+  $vpDir = Join-Path $env:ZCONF_DIR "virtualpath.d"
+  New-Item -ItemType Directory -Force -Path $vpDir | Out-Null
+
+  $vroot = Join-Path $tmpRoot "vroot"
+  New-Item -ItemType Directory -Force -Path $vroot | Out-Null
+
+  # Create a fake target directory
+  $target = Join-Path $tmpRoot "target\main"
+  New-Item -ItemType Directory -Force -Path $target | Out-Null
+
+  $addVp = Join-Path $base "tools\add-virtualpath.ps1"
+  $listVp = Join-Path $base "tools\list-virtualpath.ps1"
+  $docVp = Join-Path $base "tools\doctor-virtualpath.ps1"
+  $applyVp = Join-Path $base "tools\apply-virtualpath.ps1"
+  $rmVp = Join-Path $base "tools\remove-virtualpath.ps1"
+
+  & $addVp -VPath "hobby/car" -Target $target -Yes | Out-Null
+
+  $out = & $listVp | Out-String
+  if ($out -notmatch "hobby/car") { Die "list-virtualpath missing vpath" }
+  if ($out -notmatch [regex]::Escape($target)) { Die "list-virtualpath missing target" }
+
+  & $docVp -CheckTargets | Out-Null
+
+  # dry-run apply must succeed
+  & $applyVp -Root $vroot -DryRun -Yes | Out-Null
+
+  & $rmVp -VPath "hobby/car" -Yes | Out-Null
+  $out2 = & $listVp | Out-String
+  if ($out2 -match "hobby/car") { Die "remove-virtualpath failed: still present" }
+
+  Say "  OK: virtualpath smoke passed"
+}
+finally {
+  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $tmpRoot | Out-Null
+  Remove-Item Env:ZCONF_DIR -ErrorAction SilentlyContinue
 }
 
 Say "ALL OK"

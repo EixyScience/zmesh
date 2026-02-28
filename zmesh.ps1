@@ -1,45 +1,64 @@
+#requires -Version 5.1
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
 param(
   [Parameter(ValueFromRemainingArguments=$true)]
   [string[]]$Args
 )
 
-$ErrorActionPreference = "Stop"
-
-# この zmesh.ps1 があるディレクトリを「ツール置き場」とみなす
-$toolDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+# この zmesh.ps1 があるディレクトリ（repo root を想定）
+$baseDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$toolsDir = Join-Path $baseDir "tools"
 
 function Show-Help {
 @"
-Usage:
-  zmesh <command> [args...]
+zmesh - orchestrator/agent helper for ScaleFS
 
-Commands:
-  init                -> zmesh-init.ps1
-  start               -> zmesh-start.ps1
-  stop                -> zmesh-stop.ps1
-  status              -> zmesh-status.ps1
-  doctor              -> doctor.ps1
+USAGE
+  zmesh <command> [options]
 
-  root add            -> add-root.ps1
-  root list           -> list-root.ps1
-  root remove         -> remove-root.ps1
+COMMANDS
+  init        Initialize zmesh config skeleton (creates/updates zmesh.conf and zmesh.d/)
+  start       Start zmesh agent (foreground)
+  stop        Stop zmesh agent (best-effort)
+  status      Show local status / quick diagnostics
+  doctor      Run environment checks (paths, permissions, zfs availability)
 
-  scalefs <...>       -> forward to scalefs.ps1 (zmesh scalefs ...)
+  root        Manage ScaleFS roots (add/list/remove)
+  scalefs     Proxy to scalefs tool (run "zmesh scalefs help" for details)
 
-Examples:
-  .\zmesh.ps1 init
-  .\zmesh.ps1 start
-  .\zmesh.ps1 root add
-  .\zmesh.ps1 scalefs add
-  .\zmesh.ps1 scalefs list
-"@
+  virtualpath Manage virtual paths (add/list/remove/doctor/apply)
+  help        Show this help
+
+NOTES
+  - To see scalefs help from zmesh:
+      zmesh scalefs help
+
+VIRTUALPATH SUBCOMMANDS
+  zmesh virtualpath add     -VPath <REL> -Target <PATH> [-File <NAME.conf>] [-Yes]
+  zmesh virtualpath list    [-File <NAME.conf>] [-Format table|raw]
+  zmesh virtualpath remove  -VPath <REL> [-File <NAME.conf>] [-Yes]
+  zmesh virtualpath doctor  [-CheckTargets] [-Strict] [-File <NAME.conf>]
+  zmesh virtualpath apply   -Root <VROOT> [-DryRun] [-Yes]
+
+EXAMPLES
+  zmesh init
+  zmesh start -c .\zmesh.conf
+  zmesh root add -a default -p "$HOME\scalefs"
+
+  zmesh virtualpath add -VPath "hobby/car" -Target "$HOME\scalefs\democell.abcdef\main" -Yes
+  zmesh virtualpath apply -Root "$HOME\vroot" -Yes
+"@ | Write-Host
 }
 
 function Resolve-ToolPath([string]$name) {
-  $p1 = Join-Path $toolDir ("tools\" + $name)
-  if (Test-Path $p1) { return $p1 }
-  $p2 = Join-Path $toolDir $name
-  if (Test-Path $p2) { return $p2 }
+  $p1 = Join-Path $toolsDir $name
+  if (Test-Path -LiteralPath $p1) { return $p1 }
+
+  $p2 = Join-Path $baseDir $name
+  if (Test-Path -LiteralPath $p2) { return $p2 }
+
   throw "missing script: $name (searched: $p1 and $p2)"
 }
 
@@ -49,14 +68,14 @@ function Run-Script([string]$name, [string[]]$passArgs) {
   exit $LASTEXITCODE
 }
 
-if (-not $Args -or $Args[0] -in @("help","-h","--help")) {
+if (-not $Args -or $Args.Count -eq 0 -or $Args[0] -in @("help","-h","--help")) {
   Show-Help
   exit 0
 }
 
 $cmd = $Args[0]
 $rest = @()
-if ($Args.Length -gt 1) { $rest = $Args[1..($Args.Length-1)] }
+if ($Args.Count -gt 1) { $rest = $Args[1..($Args.Count-1)] }
 
 switch ($cmd) {
   "init"   { Run-Script "zmesh-init.ps1" $rest }
@@ -66,18 +85,41 @@ switch ($cmd) {
   "doctor" { Run-Script "doctor.ps1" $rest }
 
   "root" {
-    if (-not $rest) { Show-Help; exit 2 }
-    switch ($rest[0]) {
-      "add"    { Run-Script "add-root.ps1"    $rest[1..($rest.Length-1)] }
-      "list"   { Run-Script "list-root.ps1"   $rest[1..($rest.Length-1)] }
-      "remove" { Run-Script "remove-root.ps1" $rest[1..($rest.Length-1)] }
+    if (-not $rest -or $rest.Count -eq 0) { Show-Help; exit 2 }
+    $sub = $rest[0]
+    $args2 = @()
+    if ($rest.Count -gt 1) { $args2 = $rest[1..($rest.Count-1)] }
+    switch ($sub) {
+      "add"    { Run-Script "add-root.ps1"    $args2 }
+      "list"   { Run-Script "list-root.ps1"   $args2 }
+      "remove" { Run-Script "remove-root.ps1" $args2 }
+      "rm"     { Run-Script "remove-root.ps1" $args2 }
       default  { Show-Help; exit 2 }
     }
   }
 
   "scalefs" {
-    # zmesh から scalefs を呼べるようにする
     Run-Script "scalefs.ps1" $rest
+  }
+
+  "virtualpath" {
+    $sub = "help"
+    $args2 = @()
+    if ($rest.Count -ge 1) { $sub = $rest[0] }
+    if ($rest.Count -gt 1) { $args2 = $rest[1..($rest.Count-1)] }
+
+    switch ($sub) {
+      "add"    { Run-Script "add-virtualpath.ps1" $args2 }
+      "list"   { Run-Script "list-virtualpath.ps1" $args2 }
+      "remove" { Run-Script "remove-virtualpath.ps1" $args2 }
+      "rm"     { Run-Script "remove-virtualpath.ps1" $args2 }
+      "doctor" { Run-Script "doctor-virtualpath.ps1" $args2 }
+      "apply"  { Run-Script "apply-virtualpath.ps1" $args2 }
+      "help"   { Show-Help; exit 0 }
+      "-h"     { Show-Help; exit 0 }
+      "--help" { Show-Help; exit 0 }
+      default  { Write-Host "Usage: zmesh virtualpath {add|list|remove|doctor|apply}"; exit 2 }
+    }
   }
 
   default { Show-Help; exit 2 }

@@ -1,24 +1,88 @@
-. "$PSScriptRoot\lib.ps1"
+#requires -Version 5.1
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
-$vp   = Ask "Virtual path (e.g. hobby/car)"
-$vp   = NormalizeVPath $vp
+param(
+  [Alias("v")]
+  [Parameter(Mandatory=$true)]
+  [string]$VPath,
 
-$scalefs = Ask "Scalefs id (e.g. democell.28e671)"
-$subpath = Ask "Subpath inside scalefs" "/"
-$mode    = Ask "Mode (link|mount|junction)" "link"
-$ro      = Ask "Readonly (true|false)" "false"
+  [Alias("t")]
+  [Parameter(Mandatory=$true)]
+  [string]$Target,
 
-$dir = VirtualPathDir
-$file = Join-Path $dir ("vp.{0}.conf" -f (VpFileName $vp))
+  [Alias("f")]
+  [string]$File = "virtualpath.local.conf",
 
-@"
-[virtualpath]
-path=$vp
-scalefs=$scalefs
-subpath=$subpath
-mode=$mode
-readonly=$ro
-"@ | Set-Content -Encoding UTF8 $file
+  [string]$Type = "symlink",
 
-Write-Host "OK virtualpath added: $vp -> $scalefs ($subpath)"
-Write-Host "  file: $file"
+  [switch]$Yes,
+  [switch]$DryRun
+)
+
+function Die($s){ throw $s }
+function Say($s){ Write-Host $s }
+
+$ZCONF_DIR = $env:ZCONF_DIR
+if ([string]::IsNullOrWhiteSpace($ZCONF_DIR)) { $ZCONF_DIR = Join-Path $HOME ".zmesh" }
+$confDir = Join-Path $ZCONF_DIR "virtualpath.d"
+$confPath = Join-Path $confDir $File
+
+if ($Type -ne "symlink") { Die "unsupported -Type '$Type' (only symlink)" }
+
+# normalize vpath: trim leading slashes, unify to backslash for config readability? keep "/" in header is fine.
+$VPath = $VPath.Trim()
+$VPath = $VPath.TrimStart('\','/')
+$VPath = $VPath -replace '\\','/'  # store as forward slashes in conf
+$VPath = ($VPath -replace '/+','/').TrimEnd('/')
+if ([string]::IsNullOrWhiteSpace($VPath)) { Die "VPath becomes empty after normalization" }
+
+if (-not $DryRun) {
+  New-Item -ItemType Directory -Force -Path $confDir | Out-Null
+}
+
+# Load existing (or empty)
+$content = @()
+if (Test-Path -LiteralPath $confPath) {
+  $content = Get-Content -LiteralPath $confPath -ErrorAction Stop
+}
+
+# Remove existing block for this vpath, then append new block (last-wins)
+$out = New-Object System.Collections.Generic.List[string]
+$skip = $false
+
+$hdrRegex = '^\[vpath\s+"([^"]+)"\]\s*$'
+
+foreach ($line in $content) {
+  $m = [regex]::Match($line.TrimEnd(), $hdrRegex)
+  if ($m.Success) {
+    $name = $m.Groups[1].Value
+    if ($name -eq $VPath) { $skip = $true; continue }
+    if ($skip) { $skip = $false }
+  }
+  if (-not $skip) { $out.Add($line) }
+}
+
+# Append block
+$out.Add("")
+$out.Add("[vpath `"$VPath`"]")
+$out.Add("target=$Target")
+$out.Add("type=$Type")
+
+if ($DryRun) {
+  Say "DRYRUN write: $confPath"
+  $out | ForEach-Object { Say $_ }
+  exit 0
+}
+
+if (-not (Test-Path -LiteralPath $confPath) -and -not $Yes) {
+  $ans = Read-Host "Create new config file: $confPath ? [y/N]"
+  if ($ans -notin @("y","Y","yes","YES")) { Die "aborted by user" }
+}
+
+$tmp = "$confPath.tmp"
+$out | Set-Content -LiteralPath $tmp -Encoding UTF8
+Move-Item -LiteralPath $tmp -Destination $confPath -Force
+
+Say "OK added: vpath=$VPath -> target=$Target (file=$confPath)"
+exit 0
