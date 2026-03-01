@@ -18,6 +18,8 @@ function Get-Roots {
   if (-not (Test-Path $dir)) { return @() }
 
   $roots = @()
+$roots = @($roots)   # ← これで $null や単一オブジェクトでも配列化される
+
   Get-ChildItem $dir -Filter "*.conf" -File -ErrorAction SilentlyContinue | ForEach-Object {
     $name = $null
     $path = $null
