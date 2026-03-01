@@ -1,0 +1,12 @@
+zmesh - distributed orchestration and ScaleFS engine
+
+Copyright 2026 Satoshi Takashima
+Copyright 2026 EixyScience, Inc.
+
+Licensed under the Apache License, Version 2.0.
+
+This project includes original work developed for distributed filesystem orchestration,
+virtual hierarchy abstraction, and replication management.
+
+Project repository:
+https://github.com/EixyScience/zmesh

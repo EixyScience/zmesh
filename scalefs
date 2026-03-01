@@ -1,48 +1,57 @@
 #!/bin/sh
 set -eu
 
-TOOLBASE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -d "$SELF_DIR/tools" ]; then
+  REPO_ROOT="$SELF_DIR"
+elif [ -d "$SELF_DIR/../tools" ]; then
+  REPO_ROOT=$(CDPATH= cd -- "$SELF_DIR/.." && pwd)
+else
+  REPO_ROOT="$SELF_DIR"
+fi
 
 find_tool() {
   name="$1"
-  if [ -f "$TOOLBASE/tools/$name" ]; then
-    echo "$TOOLBASE/tools/$name"
-    return 0
-  fi
-  if [ -f "$TOOLBASE/$name" ]; then
-    echo "$TOOLBASE/$name"
-    return 0
-  fi
+  if [ -f "$REPO_ROOT/tools/$name" ]; then echo "$REPO_ROOT/tools/$name"; return 0; fi
+  if [ -f "$REPO_ROOT/$name" ]; then echo "$REPO_ROOT/$name"; return 0; fi
   return 1
 }
 
 help() {
 cat <<'EOF'
-Usage:
+scalefs - ScaleFS local filesystem body helper
+
+USAGE
   scalefs <command> [args...]
 
-Commands:
-  init     -> scalefs-init.sh
-  mount    -> scalefs-mount.sh
-  umount   -> scalefs-umount.sh
-  add      -> add-scalefs.sh
-  list     -> list-scalefs.sh
-  remove   -> remove-scalefs.sh
+COMMANDS
+  init            Create skeleton in current directory
+  add             Create a new scalefs body under a root
+  list            List scalefs bodies (supports simple filters later)
+  remove          Remove a scalefs body (best-effort)
+  mount           Mount scalefs main (ZFS if available)
+  umount          Unmount scalefs main (ZFS if available)
+  manifest         Print manifest (json/ini)
+  clean           Cleanup runtime/state and optionally destroy zfs/body
+  help            Show this help
 
-advanced:
-  clone    -> clone-scalefs.sh
-  move     -> move-scalefs.sh
-  snapshot -> snapshot-scalefs.sh
-  sync     -> sync-scalefs.sh
+COMMON OPTIONS
+  -h, --help      Show help
 
-Notes:
-  - Tools can live either in repository root or under ./tools/
+COMMAND HELP
+  scalefs <command> --help
+
+EXAMPLES
+  scalefs add
+  scalefs list
+  scalefs manifest -p .
+  scalefs clean -p . --state -y
 EOF
 }
 
 run() {
   f="$1"; shift
-  path="$(find_tool "$f")" || { echo "missing tool: $f (searched: $TOOLBASE/tools and $TOOLBASE)"; exit 127; }
+  path="$(find_tool "$f")" || { echo "missing tool: $f (searched: $REPO_ROOT/tools and $REPO_ROOT)"; exit 127; }
   exec "$path" "$@"
 }
 
@@ -54,14 +63,15 @@ esac
 cmd="$1"; shift || true
 case "$cmd" in
   init)     run "scalefs-init.sh" "$@";;
-  mount)    run "scalefs-mount.sh" "$@";;
-  umount)   run "scalefs-umount.sh" "$@";;
   add)      run "add-scalefs.sh" "$@";;
   list)     run "list-scalefs.sh" "$@";;
-  remove)   run "remove-scalefs.sh" "$@";;
+  remove|rm)run "remove-scalefs.sh" "$@";;
+  mount)    run "scalefs-mount.sh" "$@";;
+  umount)   run "scalefs-umount.sh" "$@";;
 
-  clone)    run "clone-scalefs.sh" "$@";;
-  move)     run "move-scalefs.sh" "$@";;
+  manifest) run "manifest-scalefs.sh" "$@";;
+  clean)    run "clean-scalefs.sh" "$@";;
+
   snapshot) run "snapshot-scalefs.sh" "$@";;
   sync)     run "sync-scalefs.sh" "$@";;
 
