@@ -11,7 +11,10 @@ say(){ printf "%s\n" "$*"; }
 die(){ printf "ERROR: %s\n" "$*" >&2; exit 1; }
 
 BASE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-TOOLS_DIR="$BASE_DIR/tools"
+
+TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TOOLS_DIR/common.sh"
+
 
 # config dir used by common.sh
 ZCONF_DIR="${ZCONF_DIR:-/usr/local/etc/zmesh}"

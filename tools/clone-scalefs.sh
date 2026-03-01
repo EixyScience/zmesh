@@ -7,6 +7,9 @@
 SRC="$1"
 DST="$2"
 
+TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TOOLS_DIR/common.sh"
+
 cp -a "$SRC" "$DST"
 
 echo cloned

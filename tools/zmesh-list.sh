@@ -6,6 +6,9 @@
 
 BASE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
+TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TOOLS_DIR/common.sh"
+
 # prefer repo root scalefs wrapper
 if [ -x "$BASE_DIR/scalefs" ]; then
   exec "$BASE_DIR/scalefs" list "$@"

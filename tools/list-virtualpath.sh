@@ -9,6 +9,9 @@
 ZCONF_DIR="${ZCONF_DIR:-/usr/local/etc/zmesh}"
 CONF_DIR="$ZCONF_DIR/virtualpath.d"
 
+TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TOOLS_DIR/common.sh"
+
 say(){ printf "%s\n" "$*"; }
 die(){ printf "ERROR: %s\n" "$*" >&2; exit 1; }
 

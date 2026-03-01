@@ -5,7 +5,9 @@
 # http://www.apache.org/licenses/LICENSE-2.0set -eu
 
 BASE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-TOOLS_DIR="$BASE_DIR/tools"
+
+TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TOOLS_DIR/common.sh"
 
 say() { printf "%s\n" "$*"; }
 die() { printf "ERROR: %s\n" "$*" >&2; exit 1; }

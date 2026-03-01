@@ -13,6 +13,9 @@ else
   REPO_ROOT="$SELF_DIR"
 fi
 
+TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TOOLS_DIR/common.sh"
+
 find_tool() {
   name="$1"
   if [ -f "$REPO_ROOT/tools/$name" ]; then echo "$REPO_ROOT/tools/$name"; return 0; fi

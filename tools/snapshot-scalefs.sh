@@ -23,6 +23,9 @@ NODE="${NODE_ID:-}"         # optional env
 SNAP_NAME=""                # optional override
 YES=0
 
+TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TOOLS_DIR/common.sh"
+
 usage() {
 cat <<'EOF'
 snapshot-scalefs.sh - create ZFS snapshot for a scalefs body (ZFS-only)

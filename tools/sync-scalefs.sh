@@ -33,6 +33,9 @@ SNAP_NAME=""
 AUTO_SNAP=0
 YES=0
 
+TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TOOLS_DIR/common.sh"
+
 usage() {
 cat <<'EOF'
 sync-scalefs.sh - push ZFS snapshot to peer (ZFS-only)

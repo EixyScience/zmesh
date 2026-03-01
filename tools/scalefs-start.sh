@@ -6,4 +6,7 @@
 
 CONF="${1:-/usr/local/etc/zmesh/zmesh.conf}"
 
+TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TOOLS_DIR/common.sh"
+
 zmesh agent -c "$CONF"

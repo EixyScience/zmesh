@@ -21,13 +21,9 @@
 # - Targets may be missing; we still create the link (dangling) unless --strict.
 
 BASE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-TOOLS_DIR="$BASE_DIR/tools"
 
-# common.sh is optional; we only use ZCONF_DIR defaulting convention.
-if [ -f "$TOOLS_DIR/common.sh" ]; then
-  # shellcheck disable=SC1090
-  . "$TOOLS_DIR/common.sh"
-fi
+TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TOOLS_DIR/common.sh"
 
 ZCONF_DIR="${ZCONF_DIR:-/usr/local/etc/zmesh}"
 

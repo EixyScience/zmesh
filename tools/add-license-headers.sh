@@ -18,6 +18,10 @@ YEAR="${YEAR:-2026}"
 NAME1="${NAME1:-Satoshi Takashima}"
 NAME2="${NAME2:-EixyScience, Inc.}"
 
+TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TOOLS_DIR/common.sh"
+
+
 usage() {
   cat <<EOF
 Usage: $0 [--apply] [--root DIR]

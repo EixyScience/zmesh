@@ -13,6 +13,9 @@ ID=""
 ROOT=""
 PATHV=""
 
+TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$TOOLS_DIR/common.sh"
+
 usage() {
 cat <<'EOF'
 manifest-scalefs.sh - print scalefs manifest (json/ini)
