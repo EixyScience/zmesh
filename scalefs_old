@@ -1,0 +1,83 @@
+#!/bin/sh
+set -eu
+
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -d "$SELF_DIR/tools" ]; then
+  REPO_ROOT="$SELF_DIR"
+elif [ -d "$SELF_DIR/../tools" ]; then
+  REPO_ROOT=$(CDPATH= cd -- "$SELF_DIR/.." && pwd)
+else
+  REPO_ROOT="$SELF_DIR"
+fi
+
+# TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# . "$TOOLS_DIR/common.sh"
+. "tools/common.sh"
+
+find_tool() {
+  name="$1"
+  if [ -f "$REPO_ROOT/tools/$name" ]; then echo "$REPO_ROOT/tools/$name"; return 0; fi
+  if [ -f "$REPO_ROOT/$name" ]; then echo "$REPO_ROOT/$name"; return 0; fi
+  return 1
+}
+
+help() {
+cat <<'EOF'
+scalefs - ScaleFS local filesystem body helper
+
+USAGE
+  scalefs <command> [args...]
+
+COMMANDS
+  init            Create skeleton in current directory
+  add             Create a new scalefs body under a root
+  list            List scalefs bodies (supports simple filters later)
+  remove          Remove a scalefs body (best-effort)
+  mount           Mount scalefs main (ZFS if available)
+  umount          Unmount scalefs main (ZFS if available)
+  manifest         Print manifest (json/ini)
+  clean           Cleanup runtime/state and optionally destroy zfs/body
+  help            Show this help
+
+COMMON OPTIONS
+  -h, --help      Show help
+
+COMMAND HELP
+  scalefs <command> --help
+
+EXAMPLES
+  scalefs add
+  scalefs list
+  scalefs manifest -p .
+  scalefs clean -p . --state -y
+EOF
+}
+
+run() {
+  f="$1"; shift
+  path="$(find_tool "$f")" || { echo "missing tool: $f (searched: $REPO_ROOT/tools and $REPO_ROOT)"; exit 127; }
+  exec "$path" "$@"
+}
+
+[ $# -ge 1 ] || { help; exit 0; }
+case "$1" in
+  -h|--help|help) help; exit 0;;
+esac
+
+cmd="$1"; shift || true
+case "$cmd" in
+  init)     run "scalefs-init.sh" "$@";;
+  add)      run "add-scalefs.sh" "$@";;
+  list)     run "list-scalefs.sh" "$@";;
+  remove|rm)run "remove-scalefs.sh" "$@";;
+  mount)    run "scalefs-mount.sh" "$@";;
+  umount)   run "scalefs-umount.sh" "$@";;
+
+  manifest) run "manifest-scalefs.sh" "$@";;
+  clean)    run "clean-scalefs.sh" "$@";;
+
+  snapshot) run "snapshot-scalefs.sh" "$@";;
+  sync)     run "sync-scalefs.sh" "$@";;
+
+  *) help; exit 2;;
+esac

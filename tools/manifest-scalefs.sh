@@ -1,179 +1,190 @@
 #!/bin/sh
 set -eu
 
-# manifest-scalefs.sh
-# - Print scalefs body manifest in JSON (default) or INI
-# - You must run inside a scalefs body dir (has scalefs.ini), OR pass -p
-# - If -p points to a file inside body, it will walk up to find scalefs.ini
-
-DIR="."
-FORMAT="json"
-
 say() { printf "%s\n" "$*"; }
 die() { printf "ERROR: %s\n" "$*" >&2; exit 1; }
 
 usage() {
-  cat <<'EOF'
-manifest-scalefs.sh - show manifest for a scalefs body
+cat <<'EOF'
+manifest-scalefs.sh - print scalefs body manifest (json or ini)
 
 USAGE
-  manifest-scalefs.sh [-p PATH] [-f json|ini] [-h]
+  sh tools/manifest-scalefs.sh [options]
 
 OPTIONS
-  -p, --path PATH     Path inside scalefs body (dir or file). Default: .
-  -f, --format FMT    json (default) or ini
+  -p, --path PATH     Path inside a scalefs body (body dir OR any subdir)
+  -f, --format FMT    json (default) | ini
   -h, --help          Show help
 
 EXAMPLES
-  # Run inside a scalefs body directory
-  cd /path/to/democell.28e671
-  sh tools/manifest-scalefs.sh -p .
+  # Run inside a scalefs body:
+  cd /path/to/democell.28e671 && sh /path/to/zmesh/tools/manifest-scalefs.sh -p .
 
-  # From anywhere, point to the body directory
-  sh tools/manifest-scalefs.sh -p /scalefsroot/democell.28e671 -f json
+  # Or point to any subdir (it will walk up):
+  sh tools/manifest-scalefs.sh -p /path/to/democell.28e671/main -f ini
 EOF
 }
 
-# --- arg parse ---
+PATH_IN="."
+FMT="json"
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    -p|--path)   DIR="${2:-}"; shift 2 ;;
-    -f|--format) FORMAT="${2:-}"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
+    -p|--path) PATH_IN="${2:-}"; shift 2;;
+    -f|--format) FMT="${2:-}"; shift 2;;
+    -h|--help) usage; exit 0;;
     *) die "unknown arg: $1 (use -h)";;
   esac
 done
 
-case "$FORMAT" in
-  json|ini) :;;
-  *) die "invalid format: $FORMAT (json|ini)";;
+case "$FMT" in
+  json|ini) ;;
+  *) die "invalid format: $FMT (json|ini)";;
 esac
 
-# --- resolve scalefs.ini by walking up ---
-resolve_body_dir() {
-  p="$1"
-  [ -n "$p" ] || p="."
+# Resolve to absolute path
+if [ "$PATH_IN" = "." ]; then
+  CUR="$(pwd)"
+else
+  CUR="$PATH_IN"
+fi
 
+# Find scalefs.ini by walking up
+find_body_dir() {
+  d="$1"
   # normalize
-  if [ -f "$p" ]; then
-    d=$(CDPATH= cd -- "$(dirname -- "$p")" && pwd)
-  else
-    d=$(CDPATH= cd -- "$p" 2>/dev/null && pwd) || return 1
+  if command -v realpath >/dev/null 2>&1; then
+    d="$(realpath "$d" 2>/dev/null || printf "%s" "$d")"
   fi
 
-  cur="$d"
-  while :; do
-    if [ -f "$cur/scalefs.ini" ]; then
-      printf "%s\n" "$cur"
+  while [ -n "$d" ] && [ "$d" != "/" ]; do
+    if [ -f "$d/scalefs.ini" ]; then
+      printf "%s\n" "$d"
       return 0
     fi
-    parent=$(dirname -- "$cur")
-    [ "$parent" = "$cur" ] && break
-    cur="$parent"
+    d="$(dirname "$d")"
   done
   return 1
 }
 
-BODY_DIR="$(resolve_body_dir "$DIR" || true)"
-[ -n "$BODY_DIR" ] || die "missing scalefs.ini near: $DIR
+BODY="$(find_body_dir "$CUR" || true)"
+[ -n "$BODY" ] || die "missing scalefs.ini near: $CUR
 HINT: run inside a scalefs body dir (contains scalefs.ini), e.g.
-  cd /path/to/<name>.<shortid> && sh tools/manifest-scalefs.sh -p ."
+  cd /path/to/<name>.<shortid> && sh tools/manifest-scalefs.sh -p .
+or point to a subdir inside it:
+  sh tools/manifest-scalefs.sh -p /path/to/<name>.<shortid>/main"
 
-INI="$BODY_DIR/scalefs.ini"
+INI="$BODY/scalefs.ini"
 
-# --- ini reader (section/key) ---
 ini_get() {
-  section="$1"
-  key="$2"
-  awk -v sec="[$section]" -v key="$key" '
+  sec="$1"; key="$2"
+  awk -v sec="[$sec]" -v key="$key" '
     BEGIN{in=0}
-    $0 ~ "^[[:space:]]*\\[" {
-      in = ($0==sec) ? 1 : 0
-    }
+    $0 ~ /^[[:space:]]*\[/ { in=0 }
+    $0 ~ "^[[:space:]]*"sec"[[:space:]]*$" { in=1; next }
     in==1 {
-      # strip CR
-      sub(/\r$/, "", $0)
-      if ($0 ~ "^[[:space:]]*" key "[[:space:]]*=") {
-        sub("^[[:space:]]*" key "[[:space:]]*=[[:space:]]*", "", $0)
-        print $0
-        exit
+      # strip comments
+      sub(/[;#].*$/,"")
+      if ($0 ~ "^[[:space:]]*"key"[[:space:]]*=") {
+        sub("^[[:space:]]*"key"[[:space:]]*=","")
+        gsub(/^[[:space:]]+|[[:space:]]+$/,"")
+        print; exit
       }
     }
   ' "$INI"
 }
 
-id="$(ini_get scalefs id)"
-name="$(ini_get scalefs name)"
-sid="$(ini_get scalefs shortid)"
+ID="$(ini_get scalefs id)"
+NAME="$(ini_get scalefs name)"
+SID="$(ini_get scalefs shortid)"
 
-state_dir="$(ini_get paths state_dir)"
-watch_root="$(ini_get paths watch_root)"
+STATE_DIR="$(ini_get paths state_dir)"
+WATCH_ROOT="$(ini_get paths watch_root)"
 
-zfs_enabled="$(ini_get zfs enabled)"
-zfs_pool="$(ini_get zfs pool)"
-zfs_dataset="$(ini_get zfs dataset)"
+ZFS_EN="$(ini_get zfs enabled)"
+ZFS_POOL="$(ini_get zfs pool)"
+ZFS_DS="$(ini_get zfs dataset)"
 
-now="$(date +%s 2>/dev/null || echo 0)"
-os="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo unknown)"
+NOW="$(date +%s)"
+OS="$(uname -s 2>/dev/null || echo unknown)"
 
-main_path="$BODY_DIR/main"
-state_path="$BODY_DIR/scalefs.state"
-global_d="$BODY_DIR/scalefs.global.d"
-local_d="$BODY_DIR/scalefs.local.d"
-runtime_d="$BODY_DIR/scalefs.runtime.d"
+MAIN="$BODY/main"
+STATE="$BODY/scalefs.state"
+GD="$BODY/scalefs.global.d"
+LD="$BODY/scalefs.local.d"
+RD="$BODY/scalefs.runtime.d"
 
-if [ "$FORMAT" = "ini" ]; then
+if [ "$FMT" = "ini" ]; then
   cat <<EOF
 [manifest]
-generated_unix=$now
-os=$os
-path=$BODY_DIR
+generated_unix=$NOW
+os=$OS
+path=$BODY
 
 [scalefs]
-id=$id
-name=$name
-shortid=$sid
+id=$ID
+name=$NAME
+shortid=$SID
 
 [paths]
-main=$main_path
-state=$state_path
-global_d=$global_d
-local_d=$local_d
-runtime_d=$runtime_d
+main=$MAIN
+state=$STATE
+global_d=$GD
+local_d=$LD
+runtime_d=$RD
 
 [config]
-state_dir=$state_dir
-watch_root=$watch_root
+state_dir=$STATE_DIR
+watch_root=$WATCH_ROOT
 
 [zfs]
-enabled=$zfs_enabled
-pool=$zfs_pool
-dataset=$zfs_dataset
+enabled=$ZFS_EN
+pool=$ZFS_POOL
+dataset=$ZFS_DS
 EOF
   exit 0
 fi
 
-# json
-escape_json() {
-  # minimal escape
-  printf "%s" "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+# json (minimal, no jq dependency)
+# escape helper
+json_escape() { printf "%s" "$1" | awk '
+  BEGIN{ORS=""}
+  {
+    gsub(/\\/,"\\\\");
+    gsub(/"/,"\\\"");
+    gsub(/\r/,"\\r");
+    gsub(/\n/,"\\n");
+    gsub(/\t/,"\\t");
+    print
+  }'
 }
 
 cat <<EOF
 {
   "ok": true,
-  "generated_unix": $now,
-  "os": "$(escape_json "$os")",
-  "path": "$(escape_json "$BODY_DIR")",
-  "scalefs": { "id": "$(escape_json "$id")", "name": "$(escape_json "$name")", "shortid": "$(escape_json "$sid")" },
-  "paths": {
-    "main": "$(escape_json "$main_path")",
-    "state": "$(escape_json "$state_path")",
-    "global_d": "$(escape_json "$global_d")",
-    "local_d": "$(escape_json "$local_d")",
-    "runtime_d": "$(escape_json "$runtime_d")"
+  "generated_unix": $NOW,
+  "os": "$(json_escape "$OS")",
+  "path": "$(json_escape "$BODY")",
+  "scalefs": {
+    "id": "$(json_escape "$ID")",
+    "name": "$(json_escape "$NAME")",
+    "shortid": "$(json_escape "$SID")"
   },
-  "config": { "state_dir": "$(escape_json "$state_dir")", "watch_root": "$(escape_json "$watch_root")" },
-  "zfs": { "enabled": "$(escape_json "$zfs_enabled")", "pool": "$(escape_json "$zfs_pool")", "dataset": "$(escape_json "$zfs_dataset")" }
+  "paths": {
+    "main": "$(json_escape "$MAIN")",
+    "state": "$(json_escape "$STATE")",
+    "global_d": "$(json_escape "$GD")",
+    "local_d": "$(json_escape "$LD")",
+    "runtime_d": "$(json_escape "$RD")"
+  },
+  "config": {
+    "state_dir": "$(json_escape "$STATE_DIR")",
+    "watch_root": "$(json_escape "$WATCH_ROOT")"
+  },
+  "zfs": {
+    "enabled": "$(json_escape "$ZFS_EN")",
+    "pool": "$(json_escape "$ZFS_POOL")",
+    "dataset": "$(json_escape "$ZFS_DS")"
+  }
 }
 EOF

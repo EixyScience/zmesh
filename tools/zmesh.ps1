@@ -2,9 +2,9 @@
 # Copyright 2026 EixyScience, Inc.
 # Licensed under the Apache License, Version 2.0
 # http://www.apache.org/licenses/LICENSE-2.0param(
-  [Parameter(ValueFromRemainingArguments = $true)]
-  [string[]]$Args
-)
+[Parameter(ValueFromRemainingArguments = $true)]
+[string[]]$Args
+
 
 $ErrorActionPreference = "Stop"
 
