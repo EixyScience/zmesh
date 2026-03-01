@@ -1,4 +1,7 @@
-# tools/remove-scalefs.ps1
+# Copyright 2026 Satoshi Takashima
+# Copyright 2026 EixyScience, Inc.
+# Licensed under the Apache License, Version 2.0
+# http://www.apache.org/licenses/LICENSE-2.0# tools/remove-scalefs.ps1
 # Remove a scalefs body directory (and optionally destroy its ZFS dataset)
 # - Default: tries to destroy dataset ONLY if [zfs] enabled=true and dataset is set.
 # - Best-effort; if ZFS destroy fails, still can remove directory (unless it's mounted/busy).

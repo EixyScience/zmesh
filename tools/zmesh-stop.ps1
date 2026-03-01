@@ -1,2 +1,5 @@
-Get-Process zmesh -ErrorAction SilentlyContinue | Stop-Process
+# Copyright 2026 Satoshi Takashima
+# Copyright 2026 EixyScience, Inc.
+# Licensed under the Apache License, Version 2.0
+# http://www.apache.org/licenses/LICENSE-2.0Get-Process zmesh -ErrorAction SilentlyContinue | Stop-Process
 Write-Host "zmesh stopped"

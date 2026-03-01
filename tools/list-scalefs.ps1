@@ -1,4 +1,7 @@
-# tools/list-scalefs.ps1
+# Copyright 2026 Satoshi Takashima
+# Copyright 2026 EixyScience, Inc.
+# Licensed under the Apache License, Version 2.0
+# http://www.apache.org/licenses/LICENSE-2.0# tools/list-scalefs.ps1
 # List scalefs bodies under registered roots (root.*.conf: alias=, path=)
 
 Set-StrictMode -Version Latest

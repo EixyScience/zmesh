@@ -1,5 +1,8 @@
 #!/bin/sh
-set -eu
+# Copyright 2026 Satoshi Takashima
+# Copyright 2026 EixyScience, Inc.
+# Licensed under the Apache License, Version 2.0
+# http://www.apache.org/licenses/LICENSE-2.0set -eu
 
 # Add/Upsert a [vpath "..."] rule into a conf file under $ZCONF_DIR/virtualpath.d/
 # Default target file: virtualpath.local.conf

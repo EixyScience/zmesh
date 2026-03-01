@@ -1,6 +1,10 @@
 #!/bin/sh
-set -eu
-. ./common.sh
+# Copyright 2026 Satoshi Takashima
+# Copyright 2026 EixyScience, Inc.
+# Licensed under the Apache License, Version 2.0
+# http://www.apache.org/licenses/LICENSE-2.0set -eu
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$SCRIPT_DIR/common.sh"
 
 NAME="${NAME:-}"     # name.shortid
 YES="${YES:-0}"      # 1 => no prompt
