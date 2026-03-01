@@ -1,62 +1,74 @@
-# tools/manifest-scalefs.ps1
-# Copyright 2026 Satoshi Takashima
-# Copyright 2026 EixyScience, Inc.
-# Licensed under the Apache License, Version 2.0
-# http://www.apache.org/licenses/LICENSE-2.0
-
 #requires -Version 5.1
-Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
-
 param(
-  [string]$Id,
-  [string]$Root,
-  [string]$Path,
-  [ValidateSet("json","ini")] [string]$Format = "json",
+  [Alias("i")] [string]$Id,
+  [Alias("r")] [string]$Root,
+  [Alias("p")] [string]$Path = ".",
+  [Alias("f")] [ValidateSet("json","ini")] [string]$Format = "json",
   [Alias("h")] [switch]$Help
 )
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
 function Usage {
 @"
-manifest-scalefs.ps1 - print a scalefs "manifest" (resolved paths + zfs info)
+manifest-scalefs.ps1 - show manifest for a scalefs body
 
 USAGE
-  manifest-scalefs.ps1 [-Id ID] [-Root ALIAS] [-Path PATH] [-Format json|ini] [-Help]
+  powershell -ExecutionPolicy Bypass -File tools\manifest-scalefs.ps1 [-Path PATH] [-Format json|ini]
+  powershell -ExecutionPolicy Bypass -File tools\manifest-scalefs.ps1 -Id ID [-Root ALIAS] [-Format json|ini]
 
 OPTIONS
-  -Id ID           scalefs id (name.shortid)
-  -Root ALIAS      root alias (needed if id is not unique across roots)
-  -Path PATH       body path (use "." for current dir)
-  -Format          json (default) | ini
-  -Help, -h        show help
+  -p, -Path PATH        Path inside scalefs body (dir or file). Default: .
+  -i, -Id ID            body id (name.shortid)
+  -r, -Root ALIAS       root alias (when resolving -Id)
+  -f, -Format FMT       json (default) or ini
+  -h, -Help             Show help
 
 EXAMPLES
-  .\manifest-scalefs.ps1 -Path .
-  .\manifest-scalefs.ps1 -Id democell.28e671 -Root test
-  .\manifest-scalefs.ps1 -Path C:\scalefsroot\democell.28e671 -Format ini
+  powershell -ExecutionPolicy Bypass -File tools\manifest-scalefs.ps1 -Path .
+  powershell -ExecutionPolicy Bypass -File tools\manifest-scalefs.ps1 -Path C:\scalefsroot\democell.28e671 -Format ini
+  powershell -ExecutionPolicy Bypass -File tools\manifest-scalefs.ps1 -Id democell.28e671 -Root test
 "@ | Write-Host
 }
 
-if ($Help) { Usage; exit 0 }
+if ($PSBoundParameters.ContainsKey("Help")) { Usage; exit 0 }
 
 function Die([string]$m) { throw $m }
 
-function Get-ZconfDir {
-  if ($env:ZCONF_DIR) { return $env:ZCONF_DIR }
-  return "$HOME\.zmesh"
+# Walk up to find scalefs.ini
+function Resolve-BodyDir([string]$p) {
+  if (-not $p) { $p = "." }
+
+  $d = $null
+  if (Test-Path $p -PathType Leaf) {
+    $d = (Resolve-Path (Split-Path -Parent $p)).Path
+  } else {
+    $d = (Resolve-Path $p).Path
+  }
+
+  $cur = $d
+  while ($true) {
+    if (Test-Path (Join-Path $cur "scalefs.ini")) { return $cur }
+    $parent = Split-Path -Parent $cur
+    if (-not $parent -or $parent -eq $cur) { break }
+    $cur = $parent
+  }
+  return $null
 }
 
-# root config format: [root "name"] + path=
+# Load roots: compatible with [root "name"] + path=
 function Get-Roots {
-  $zconf = Get-ZconfDir
+  $zconf = $env:ZCONF_DIR
+  if (-not $zconf) { $zconf = "$HOME\.zmesh" }
   $dir = Join-Path $zconf "zmesh.d"
   if (-not (Test-Path $dir)) { return @() }
 
   $roots = @()
-  Get-ChildItem $dir -Filter "*.conf" -File | ForEach-Object {
+  Get-ChildItem $dir -Filter "*.conf" -File -ErrorAction SilentlyContinue | ForEach-Object {
     $name = $null
     $path = $null
-    foreach ($line in Get-Content $_.FullName) {
+    foreach ($line in (Get-Content $_.FullName)) {
       if ($line -match '^\[root\s+"(.+)"\]') { $name = $matches[1] }
       elseif ($line -match '^path=(.+)$') { $path = $matches[1] }
     }
@@ -65,48 +77,53 @@ function Get-Roots {
   return $roots
 }
 
-function Resolve-BodyPath {
-  param([string]$Id,[string]$Root,[string]$Path)
-
-  if ($Path) {
-    if ($Path -eq ".") { return (Get-Location).Path }
-    return (Resolve-Path $Path).Path
-  }
-
-  if (-not $Id) { Die "require -Path or -Id" }
-
+function Resolve-BodyPathById([string]$id,[string]$rootAlias) {
   $roots = Get-Roots
-  if ($Root) {
-    $r = $roots | Where-Object { $_.Alias -eq $Root } | Select-Object -First 1
-    if (-not $r) { Die "unknown root alias: $Root" }
-    return (Join-Path $r.Path $Id)
+  if (-not $id) { Die "require -Path or -Id" }
+
+  if ($rootAlias) {
+    $r = $roots | Where-Object { $_.Alias -eq $rootAlias } | Select-Object -First 1
+    if (-not $r) { Die "unknown root alias: $rootAlias" }
+    return (Join-Path $r.Path $id)
   }
 
   $cands = @()
   foreach ($r in $roots) {
-    $p = Join-Path $r.Path $Id
+    $p = Join-Path $r.Path $id
     if (Test-Path $p) { $cands += $p }
   }
-  if ($cands.Count -ne 1) { Die "could not resolve id=$Id uniquely (specify -Root or -Path)" }
+  if ($cands.Count -ne 1) { Die "could not resolve id=$id uniquely (specify -Root or -Path)" }
   return $cands[0]
 }
 
-function Get-IniValue {
-  param([string]$IniPath,[string]$Section,[string]$Key)
-  $sec = "[$Section]"
+function Get-IniValue([string]$ini,[string]$section,[string]$key) {
+  $sec = "[$section]"
   $in = $false
-  foreach ($line in Get-Content $IniPath) {
-    if ($line.Trim() -eq $sec) { $in = $true; continue }
-    if ($in -and $line.Trim().StartsWith("[")) { break }
-    if ($in -and $line -match ("^\s*"+[regex]::Escape($Key)+"\s*=\s*(.*)$")) { return $matches[1].Trim() }
+  foreach ($line in Get-Content $ini) {
+    $t = $line.Trim()
+    if ($t -eq $sec) { $in = $true; continue }
+    if ($in -and $t.StartsWith("[")) { break }
+    if ($in -and $line -match ("^\s*"+[regex]::Escape($key)+"\s*=\s*(.*)$")) {
+      return $matches[1].Trim()
+    }
   }
   return ""
 }
 
-$dir = Resolve-BodyPath -Id $Id -Root $Root -Path $Path
-if (-not (Test-Path $dir)) { Die "not a directory: $dir" }
-$ini = Join-Path $dir "scalefs.ini"
-if (-not (Test-Path $ini)) { Die "missing scalefs.ini: $ini" }
+# Resolve target directory
+$target = $null
+if ($Id) {
+  $target = Resolve-BodyPathById -id $Id -rootAlias $Root
+} else {
+  $target = $Path
+}
+
+$bodyDir = Resolve-BodyDir $target
+if (-not $bodyDir) {
+  Die "missing scalefs.ini near: $target`nHINT: run inside a scalefs body dir or pass -Path to it."
+}
+
+$ini = Join-Path $bodyDir "scalefs.ini"
 
 $idv  = Get-IniValue $ini "scalefs" "id"
 $name = Get-IniValue $ini "scalefs" "name"
@@ -127,7 +144,7 @@ if ($Format -eq "ini") {
 [manifest]
 generated_unix=$now
 os=$os
-path=$dir
+path=$bodyDir
 
 [scalefs]
 id=$idv
@@ -135,11 +152,11 @@ name=$name
 shortid=$sid
 
 [paths]
-main=$(Join-Path $dir "main")
-state=$(Join-Path $dir "scalefs.state")
-global_d=$(Join-Path $dir "scalefs.global.d")
-local_d=$(Join-Path $dir "scalefs.local.d")
-runtime_d=$(Join-Path $dir "scalefs.runtime.d")
+main=$(Join-Path $bodyDir "main")
+state=$(Join-Path $bodyDir "scalefs.state")
+global_d=$(Join-Path $bodyDir "scalefs.global.d")
+local_d=$(Join-Path $bodyDir "scalefs.local.d")
+runtime_d=$(Join-Path $bodyDir "scalefs.runtime.d")
 
 [config]
 state_dir=$stateDir
@@ -157,16 +174,17 @@ $obj = [ordered]@{
   ok = $true
   generated_unix = $now
   os = $os
-  path = $dir
+  path = $bodyDir
   scalefs = [ordered]@{ id=$idv; name=$name; shortid=$sid }
   paths = [ordered]@{
-    main = (Join-Path $dir "main")
-    state = (Join-Path $dir "scalefs.state")
-    global_d = (Join-Path $dir "scalefs.global.d")
-    local_d = (Join-Path $dir "scalefs.local.d")
-    runtime_d = (Join-Path $dir "scalefs.runtime.d")
+    main = (Join-Path $bodyDir "main")
+    state = (Join-Path $bodyDir "scalefs.state")
+    global_d = (Join-Path $bodyDir "scalefs.global.d")
+    local_d = (Join-Path $bodyDir "scalefs.local.d")
+    runtime_d = (Join-Path $bodyDir "scalefs.runtime.d")
   }
   config = [ordered]@{ state_dir=$stateDir; watch_root=$watchRoot }
   zfs = [ordered]@{ enabled=$zfsEnabled; pool=$zfsPool; dataset=$zfsDataset }
 }
+
 $obj | ConvertTo-Json -Depth 6
