@@ -2,212 +2,218 @@
 # Copyright 2026 Satoshi Takashima
 # Copyright 2026 EixyScience, Inc.
 # Licensed under the Apache License, Version 2.0
-# http://www.apache.org/licenses/LICENSE-2.0set -eu
+# http://www.apache.org/licenses/LICENSE-2.0
 
-# tools/manifest-scalefs.sh
-# Outputs manifest in JSON (default) or INI
-# Resolve by -p PATH or -i ID with optional -r ROOT_ALIAS
+set -eu
 
-FORMAT="json"
-ID=""
-ROOT=""
-PATHV=""
-
-TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-. "$TOOLS_DIR/common.sh"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$SCRIPT_DIR/common.sh"
 
 usage() {
-cat <<'EOF'
-manifest-scalefs.sh - print scalefs manifest (json/ini)
+  cat <<'EOF'
+manifest-scalefs.sh - print a scalefs "manifest" (resolved paths + zfs info)
 
 USAGE
-  manifest-scalefs.sh [-p PATH] [-i ID [-r ROOT]] [-f json|ini]
+  manifest-scalefs.sh [-i ID] [-r ROOT] [-p PATH] [-f json|ini] [-h]
 
 OPTIONS
-  -p, --path PATH       Scalefs body path (e.g. "." or "/scalefsroot/democell.28e671")
-  -i, --id ID           Scalefs id (name.shortid)
-  -r, --root ALIAS      Root alias (to disambiguate ID)
-  -f, --format FMT      "json" (default) or "ini"
-  -h, --help            Show help
+  -i, --id ID         scalefs id (name.shortid)
+  -r, --root ROOT     root alias (needed if id is not unique across roots)
+  -p, --path PATH     body path (use "." for current dir)
+  -f, --format FMT    json (default) | ini
+  -h, --help          show help
 
 EXAMPLES
   manifest-scalefs.sh -p .
   manifest-scalefs.sh -i democell.28e671 -r test
-  manifest-scalefs.sh -p /scalefsroot/democell.28e671 -f ini
+  manifest-scalefs.sh -p /path/to/democell.28e671 -f ini
 EOF
 }
 
-# parse args
+die() { printf "ERROR: %s\n" "$*" >&2; exit 1; }
+
+FMT="json"
+ID=""
+ROOT=""
+PATH_IN=""
+
+# ---------------------------
+# args
+# ---------------------------
 while [ $# -gt 0 ]; do
   case "$1" in
-    -p|--path) PATHV="${2:-}"; shift 2;;
+    -h|--help) usage; exit 0;;
+    -f|--format) FMT="${2:-}"; shift 2;;
     -i|--id) ID="${2:-}"; shift 2;;
     -r|--root) ROOT="${2:-}"; shift 2;;
-    -f|--format) FORMAT="${2:-}"; shift 2;;
-    -h|--help) usage; exit 0;;
-    *) echo "unknown arg: $1" >&2; usage; exit 2;;
+    -p|--path) PATH_IN="${2:-}"; shift 2;;
+    *) die "unknown arg: $1";;
   esac
 done
 
-BASE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-TOOLS_DIR="$BASE_DIR/tools"
+[ "$FMT" = "json" ] || [ "$FMT" = "ini" ] || die "bad --format: $FMT"
 
-# common.sh provides load_roots and normalize_name
-. "$TOOLS_DIR/common.sh"
-
-die(){ echo "ERROR: $*" >&2; exit 1; }
-
-# resolve body path
-resolve_body_path() {
-  if [ -n "$PATHV" ]; then
-    if [ "$PATHV" = "." ]; then
-      pwd
-    else
-      # keep as-is but normalize
-      (cd "$PATHV" 2>/dev/null && pwd) || die "not a directory: $PATHV"
-    fi
-    return 0
-  fi
-
-  [ -n "$ID" ] || die "require --path or --id"
-  # search roots
-  roots="$(load_roots || true)"
-  [ -n "$roots" ] || die "no roots configured (ZCONF_DIR=$ZCONF_DIR)"
-
-  if [ -n "$ROOT" ]; then
-    p="$(printf "%s\n" "$roots" | awk -F'|' -v r="$ROOT" '$1==r{print $2; exit}')"
-    [ -n "$p" ] || die "unknown root alias: $ROOT"
-    d="$p/$ID"
-    [ -d "$d" ] || die "not found: $d"
-    (cd "$d" && pwd)
-    return 0
-  fi
-
-  # unique match across roots
-  found=""
-  count=0
-  printf "%s\n" "$roots" | while IFS='|' read a p; do
-    [ -d "$p/$ID" ] || continue
-    echo "$p/$ID"
-  done > /tmp/.zmesh_manifest_candidates.$$ 2>/dev/null || true
-
-  if [ -f /tmp/.zmesh_manifest_candidates.$$ ]; then
-    count=$(wc -l < /tmp/.zmesh_manifest_candidates.$$ | tr -d ' ')
-    if [ "$count" -eq 1 ]; then
-      found=$(cat /tmp/.zmesh_manifest_candidates.$$)
-      rm -f /tmp/.zmesh_manifest_candidates.$$
-      (cd "$found" && pwd)
-      return 0
-    fi
-    rm -f /tmp/.zmesh_manifest_candidates.$$
-  fi
-
-  die "could not resolve id=$ID uniquely (specify --root or --path)"
+# ---------------------------
+# ini reader (simple)
+# ---------------------------
+ini_get() {
+  _file="$1"; _sec="$2"; _key="$3"
+  awk -v sec="[$_sec]" -v key="$_key" '
+    BEGIN{in=0}
+    $0 ~ /^[[:space:]]*#/ {next}
+    $0 ~ /^[[:space:]]*;/{next}
+    $0 ~ /^[[:space:]]*\[/{
+      in = ($0==sec)?1:0
+      next
+    }
+    in==1 {
+      # key = value
+      match($0, "^[[:space:]]*"key"[[:space:]]*=[[:space:]]*(.*)$", m)
+      if (m[1]!="") { print m[1]; exit }
+    }
+  ' "$_file"
 }
 
-DIR="$(resolve_body_path)"
+resolve_body_dir() {
+  # If -p is given, use it.
+  if [ -n "$PATH_IN" ]; then
+    if [ "$PATH_IN" = "." ]; then
+      pwd
+      return 0
+    fi
+    # best-effort realpath
+    if command -v realpath >/dev/null 2>&1; then
+      realpath "$PATH_IN"
+    else
+      # fallback
+      (cd "$PATH_IN" 2>/dev/null && pwd) || die "cannot resolve path: $PATH_IN"
+    fi
+    return 0
+  fi
+
+  [ -n "$ID" ] || die "require -p PATH or -i ID"
+
+  # If -r root is given, resolve directly
+  if [ -n "$ROOT" ]; then
+    PATHVAL="$(load_roots | awk -F'|' -v r="$ROOT" '$1==r{print $2; exit}')"
+    [ -n "$PATHVAL" ] || die "unknown root alias: $ROOT"
+    echo "$PATHVAL/$ID"
+    return 0
+  fi
+
+  # otherwise: unique match across all roots
+  cands=""
+  load_roots | while IFS='|' read -r alias path; do
+    [ -n "$path" ] || continue
+    d="$path/$ID"
+    if [ -d "$d" ]; then
+      printf "%s\n" "$d"
+    fi
+  done > "${TMPDIR:-/tmp}/zmesh.cands.$$"
+
+  n="$(wc -l < "${TMPDIR:-/tmp}/zmesh.cands.$$" | tr -d ' ')"
+  if [ "$n" -ne 1 ]; then
+    rm -f "${TMPDIR:-/tmp}/zmesh.cands.$$"
+    die "could not resolve id=$ID uniquely (use -r ROOT or -p PATH)"
+  fi
+  cat "${TMPDIR:-/tmp}/zmesh.cands.$$"
+  rm -f "${TMPDIR:-/tmp}/zmesh.cands.$$"
+}
+
+DIR="$(resolve_body_dir)"
+[ -d "$DIR" ] || die "not a directory: $DIR"
+
 INI="$DIR/scalefs.ini"
 [ -f "$INI" ] || die "missing scalefs.ini: $INI"
 
-# INI read helper (section/key)
-ini_get() {
-  sec="$1"; key="$2"
-  awk -v SEC="[$sec]" -v KEY="$key" '
-    $0==SEC {in=1; next}
-    in && /^\[/ {exit}
-    in && $0 ~ "^[[:space:]]*"KEY"[[:space:]]*=" {
-      sub("^[[:space:]]*"KEY"[[:space:]]*=","",$0)
-      gsub(/[[:space:]]*$/,"",$0)
-      print $0
-      exit
-    }
-  ' "$INI" || true
-}
+# read scalefs.ini
+IDV="$(ini_get "$INI" scalefs id)"
+NAME="$(ini_get "$INI" scalefs name)"
+SID="$(ini_get "$INI" scalefs shortid)"
 
-idv="$(ini_get scalefs id)"
-namev="$(ini_get scalefs name)"
-sidv="$(ini_get scalefs shortid)"
-state_dir="$(ini_get paths state_dir)"
-watch_root="$(ini_get paths watch_root)"
-zfs_enabled="$(ini_get zfs enabled)"
-zfs_pool="$(ini_get zfs pool)"
-zfs_dataset="$(ini_get zfs dataset)"
+STATE_DIR="$(ini_get "$INI" paths state_dir)"
+WATCH_ROOT="$(ini_get "$INI" paths watch_root)"
 
-now="$(date +%s)"
-os="unix"
+ZFS_ENABLED="$(ini_get "$INI" zfs enabled)"
+ZFS_POOL="$(ini_get "$INI" zfs pool)"
+ZFS_DATASET="$(ini_get "$INI" zfs dataset)"
 
-mainp="$DIR/main"
-statep="$DIR/scalefs.state"
-globalp="$DIR/scalefs.global.d"
-localp="$DIR/scalefs.local.d"
-runtimep="$DIR/scalefs.runtime.d"
+NOW_UNIX="$(date -u +%s 2>/dev/null || date +%s)"
 
-if [ "$FORMAT" = "ini" ]; then
+MAIN_PATH="$DIR/main"
+STATE_PATH="$DIR/scalefs.state"
+GD_PATH="$DIR/scalefs.global.d"
+LD_PATH="$DIR/scalefs.local.d"
+RD_PATH="$DIR/scalefs.runtime.d"
+
+# OS label
+OS="unix"
+uname_s="$(uname -s 2>/dev/null || true)"
+case "$uname_s" in
+  FreeBSD) OS="freebsd";;
+  Linux) OS="linux";;
+esac
+
+if [ "$FMT" = "ini" ]; then
   cat <<EOF
 [manifest]
-generated_unix=$now
-os=$os
+generated_unix=$NOW_UNIX
+os=$OS
 path=$DIR
 
 [scalefs]
-id=$idv
-name=$namev
-shortid=$sidv
+id=$IDV
+name=$NAME
+shortid=$SID
 
 [paths]
-main=$mainp
-state=$statep
-global_d=$globalp
-local_d=$localp
-runtime_d=$runtimep
+main=$MAIN_PATH
+state=$STATE_PATH
+global_d=$GD_PATH
+local_d=$LD_PATH
+runtime_d=$RD_PATH
 
 [config]
-state_dir=$state_dir
-watch_root=$watch_root
+state_dir=$STATE_DIR
+watch_root=$WATCH_ROOT
 
 [zfs]
-enabled=$zfs_enabled
-pool=$zfs_pool
-dataset=$zfs_dataset
+enabled=$ZFS_ENABLED
+pool=$ZFS_POOL
+dataset=$ZFS_DATASET
 EOF
   exit 0
 fi
 
-# JSON (minimal escaping: good enough for our fields)
+# json (no jq dependency)
 json_escape() {
-  printf "%s" "$1" | awk 'BEGIN{ORS=""}{
-    gsub(/\\/,"\\\\"); gsub(/"/,"\\\"");
-    gsub(/\r/,""); gsub(/\n/,"\\n");
-    print
-  }'
+  # minimal JSON string escaper (quotes/backslashes/newlines)
+  printf "%s" "$1" | awk '
+    BEGIN{ORS=""}
+    {
+      gsub(/\\/,"\\\\")
+      gsub(/"/,"\\\"")
+      gsub(/\r/,"\\r")
+      gsub(/\n/,"\\n")
+      print
+    }'
 }
 
 cat <<EOF
 {
   "ok": true,
-  "generated_unix": $now,
-  "os": "$(json_escape "$os")",
+  "generated_unix": $NOW_UNIX,
+  "os": "$(json_escape "$OS")",
   "path": "$(json_escape "$DIR")",
-  "scalefs": {
-    "id": "$(json_escape "$idv")",
-    "name": "$(json_escape "$namev")",
-    "shortid": "$(json_escape "$sidv")"
-  },
+  "scalefs": { "id": "$(json_escape "$IDV")", "name": "$(json_escape "$NAME")", "shortid": "$(json_escape "$SID")" },
   "paths": {
-    "main": "$(json_escape "$mainp")",
-    "state": "$(json_escape "$statep")",
-    "global_d": "$(json_escape "$globalp")",
-    "local_d": "$(json_escape "$localp")",
-    "runtime_d": "$(json_escape "$runtimep")"
+    "main": "$(json_escape "$MAIN_PATH")",
+    "state": "$(json_escape "$STATE_PATH")",
+    "global_d": "$(json_escape "$GD_PATH")",
+    "local_d": "$(json_escape "$LD_PATH")",
+    "runtime_d": "$(json_escape "$RD_PATH")"
   },
-  "config": {
-    "state_dir": "$(json_escape "$state_dir")",
-    "watch_root": "$(json_escape "$watch_root")"
-  },
-  "zfs": {
-    "enabled": "$(json_escape "$zfs_enabled")",
-    "pool": "$(json_escape "$zfs_pool")",
-    "dataset": "$(json_escape "$zfs_dataset")"
-  }
+  "config": { "state_dir": "$(json_escape "$STATE_DIR")", "watch_root": "$(json_escape "$WATCH_ROOT")" },
+  "zfs": { "enabled": "$(json_escape "$ZFS_ENABLED")", "pool": "$(json_escape "$ZFS_POOL")", "dataset": "$(json_escape "$ZFS_DATASET")" }
 }
 EOF

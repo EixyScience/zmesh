@@ -1,7 +1,9 @@
+# tools/clean-scalefs.ps1
 # Copyright 2026 Satoshi Takashima
 # Copyright 2026 EixyScience, Inc.
 # Licensed under the Apache License, Version 2.0
-# http://www.apache.org/licenses/LICENSE-2.0# tools/clean-scalefs.ps1
+# http://www.apache.org/licenses/LICENSE-2.0
+
 #requires -Version 5.1
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -13,8 +15,35 @@ param(
   [switch]$State,
   [switch]$DestroyZfs,
   [switch]$DestroyBody,
-  [switch]$Yes
+  [switch]$Yes,
+  [Alias("h")] [switch]$Help
 )
+
+function Usage {
+@"
+clean-scalefs.ps1 - cleanup a scalefs body (runtime/state) and optionally destroy zfs/directory
+
+USAGE
+  clean-scalefs.ps1 [-Id ID] [-Root ALIAS] [-Path PATH] [-State] [-DestroyZfs] [-DestroyBody] [-Yes] [-Help]
+
+OPTIONS
+  -Id ID           scalefs id (name.shortid)
+  -Root ALIAS      root alias (needed if id is not unique across roots)
+  -Path PATH       body path (use "." for current dir)
+  -State           also clear scalefs.state\*
+  -DestroyZfs      destroy zfs dataset referenced by scalefs.ini (best-effort)
+  -DestroyBody     remove body directory (after optional zfs destroy)
+  -Yes             do not ask confirmation
+  -Help, -h        show help
+
+EXAMPLES
+  .\clean-scalefs.ps1 -Path .
+  .\clean-scalefs.ps1 -Id democell.28e671 -State
+  .\clean-scalefs.ps1 -Id democell.28e671 -DestroyZfs -DestroyBody -Yes
+"@ | Write-Host
+}
+
+if ($Help) { Usage; exit 0 }
 
 function Die($m) { throw $m }
 
@@ -42,9 +71,7 @@ function Get-Roots {
       if ($line -match '^\[root\s+"(.+)"\]') { $name = $matches[1] }
       elseif ($line -match '^path=(.+)$') { $path = $matches[1] }
     }
-    if ($name -and $path) {
-      $roots += [pscustomobject]@{ Alias=$name; Path=$path }
-    }
+    if ($name -and $path) { $roots += [pscustomobject]@{ Alias=$name; Path=$path } }
   }
   return $roots
 }
@@ -58,8 +85,8 @@ function Resolve-BodyPath {
   }
 
   if (-not $Id) { Die "require -Path or -Id" }
-  $roots = Get-Roots
 
+  $roots = Get-Roots
   if ($Root) {
     $r = $roots | Where-Object { $_.Alias -eq $Root } | Select-Object -First 1
     if (-not $r) { Die "unknown root alias: $Root" }
@@ -82,9 +109,7 @@ function Get-IniValue {
   foreach ($line in Get-Content $IniPath) {
     if ($line.Trim() -eq $sec) { $in = $true; continue }
     if ($in -and $line.Trim().StartsWith("[")) { break }
-    if ($in -and $line -match ("^\s*"+[regex]::Escape($Key)+"\s*=\s*(.*)$")) {
-      return $matches[1].Trim()
-    }
+    if ($in -and $line -match ("^\s*"+[regex]::Escape($Key)+"\s*=\s*(.*)$")) { return $matches[1].Trim() }
   }
   return ""
 }
@@ -120,10 +145,12 @@ if ($State) {
   }
 }
 
-# optional zfs destroy
+# optional zfs destroy (best-effort)
 if ($DestroyZfs) {
   $zfs = Get-Command zfs.exe -ErrorAction SilentlyContinue
   if ($zfs -and $zfsEnabled -eq "true" -and $zfsDataset) {
+    # guard: refuse suspicious dataset names
+    if ($zfsDataset -notmatch ".+/.+") { Die "refuse to destroy suspicious dataset name: $zfsDataset" }
     & $zfs.Source unmount $zfsDataset 2>$null | Out-Null
     & $zfs.Source destroy -r $zfsDataset 2>$null | Out-Null
   }

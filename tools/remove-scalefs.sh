@@ -6,8 +6,7 @@
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$SCRIPT_DIR/common.sh"
 
-TOOLS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-. "$TOOLS_DIR/common.sh"
+
 
 
 NAME="${NAME:-}"     # name.shortid

@@ -1,7 +1,9 @@
+# tools/manifest-scalefs.ps1
 # Copyright 2026 Satoshi Takashima
 # Copyright 2026 EixyScience, Inc.
 # Licensed under the Apache License, Version 2.0
-# http://www.apache.org/licenses/LICENSE-2.0# tools/manifest-scalefs.ps1
+# http://www.apache.org/licenses/LICENSE-2.0
+
 #requires -Version 5.1
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -10,28 +12,41 @@ param(
   [string]$Id,
   [string]$Root,
   [string]$Path,
-  [ValidateSet("json","ini")] [string]$Format = "json"
+  [ValidateSet("json","ini")] [string]$Format = "json",
+  [Alias("h")] [switch]$Help
 )
-
-function Die($m) { throw $m }
 
 function Usage {
 @"
-Usage: manifest-scalefs.ps1 [-Id ID] [-Root ALIAS] [-Path PATH] [-Format json|ini]
+manifest-scalefs.ps1 - print a scalefs "manifest" (resolved paths + zfs info)
 
-Examples:
-  .\tools\manifest-scalefs.ps1 -Path .
-  .\tools\manifest-scalefs.ps1 -Id democell.28e671 -Root test
-  .\tools\manifest-scalefs.ps1 -Path C:\scalefsroot\democell.28e671 -Format ini
+USAGE
+  manifest-scalefs.ps1 [-Id ID] [-Root ALIAS] [-Path PATH] [-Format json|ini] [-Help]
+
+OPTIONS
+  -Id ID           scalefs id (name.shortid)
+  -Root ALIAS      root alias (needed if id is not unique across roots)
+  -Path PATH       body path (use "." for current dir)
+  -Format          json (default) | ini
+  -Help, -h        show help
+
+EXAMPLES
+  .\manifest-scalefs.ps1 -Path .
+  .\manifest-scalefs.ps1 -Id democell.28e671 -Root test
+  .\manifest-scalefs.ps1 -Path C:\scalefsroot\democell.28e671 -Format ini
 "@ | Write-Host
 }
+
+if ($Help) { Usage; exit 0 }
+
+function Die([string]$m) { throw $m }
 
 function Get-ZconfDir {
   if ($env:ZCONF_DIR) { return $env:ZCONF_DIR }
   return "$HOME\.zmesh"
 }
 
-# root conf: [root "NAME"] + path=...
+# root config format: [root "name"] + path=
 function Get-Roots {
   $zconf = Get-ZconfDir
   $dir = Join-Path $zconf "zmesh.d"
@@ -45,9 +60,7 @@ function Get-Roots {
       if ($line -match '^\[root\s+"(.+)"\]') { $name = $matches[1] }
       elseif ($line -match '^path=(.+)$') { $path = $matches[1] }
     }
-    if ($name -and $path) {
-      $roots += [pscustomobject]@{ Alias=$name; Path=$path }
-    }
+    if ($name -and $path) { $roots += [pscustomobject]@{ Alias=$name; Path=$path } }
   }
   return $roots
 }
@@ -61,8 +74,8 @@ function Resolve-BodyPath {
   }
 
   if (-not $Id) { Die "require -Path or -Id" }
-  $roots = Get-Roots
 
+  $roots = Get-Roots
   if ($Root) {
     $r = $roots | Where-Object { $_.Alias -eq $Root } | Select-Object -First 1
     if (-not $r) { Die "unknown root alias: $Root" }
@@ -85,9 +98,7 @@ function Get-IniValue {
   foreach ($line in Get-Content $IniPath) {
     if ($line.Trim() -eq $sec) { $in = $true; continue }
     if ($in -and $line.Trim().StartsWith("[")) { break }
-    if ($in -and $line -match ("^\s*"+[regex]::Escape($Key)+"\s*=\s*(.*)$")) {
-      return $matches[1].Trim()
-    }
+    if ($in -and $line -match ("^\s*"+[regex]::Escape($Key)+"\s*=\s*(.*)$")) { return $matches[1].Trim() }
   }
   return ""
 }
@@ -111,14 +122,6 @@ $zfsDataset = Get-IniValue $ini "zfs" "dataset"
 $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 $os  = "windows"
 
-$paths = [ordered]@{
-  main = (Join-Path $dir "main")
-  state = (Join-Path $dir "scalefs.state")
-  global_d = (Join-Path $dir "scalefs.global.d")
-  local_d = (Join-Path $dir "scalefs.local.d")
-  runtime_d = (Join-Path $dir "scalefs.runtime.d")
-}
-
 if ($Format -eq "ini") {
 @"
 [manifest]
@@ -132,11 +135,11 @@ name=$name
 shortid=$sid
 
 [paths]
-main=$($paths.main)
-state=$($paths.state)
-global_d=$($paths.global_d)
-local_d=$($paths.local_d)
-runtime_d=$($paths.runtime_d)
+main=$(Join-Path $dir "main")
+state=$(Join-Path $dir "scalefs.state")
+global_d=$(Join-Path $dir "scalefs.global.d")
+local_d=$(Join-Path $dir "scalefs.local.d")
+runtime_d=$(Join-Path $dir "scalefs.runtime.d")
 
 [config]
 state_dir=$stateDir
@@ -156,9 +159,14 @@ $obj = [ordered]@{
   os = $os
   path = $dir
   scalefs = [ordered]@{ id=$idv; name=$name; shortid=$sid }
-  paths = $paths
+  paths = [ordered]@{
+    main = (Join-Path $dir "main")
+    state = (Join-Path $dir "scalefs.state")
+    global_d = (Join-Path $dir "scalefs.global.d")
+    local_d = (Join-Path $dir "scalefs.local.d")
+    runtime_d = (Join-Path $dir "scalefs.runtime.d")
+  }
   config = [ordered]@{ state_dir=$stateDir; watch_root=$watchRoot }
   zfs = [ordered]@{ enabled=$zfsEnabled; pool=$zfsPool; dataset=$zfsDataset }
 }
-
 $obj | ConvertTo-Json -Depth 6
