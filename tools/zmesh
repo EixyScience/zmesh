@@ -1,29 +1,23 @@
 #!/bin/sh
 set -eu
 
-TOOLBASE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# repo root auto-detect:
+# - if this script is in repo root:  <root>/zmesh
+# - if this script is in tools/:     <root>/tools/zmesh
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -d "$SELF_DIR/tools" ]; then
+  REPO_ROOT="$SELF_DIR"
+elif [ -d "$SELF_DIR/../tools" ]; then
+  REPO_ROOT=$(CDPATH= cd -- "$SELF_DIR/.." && pwd)
+else
+  REPO_ROOT="$SELF_DIR"
+fi
 
-# tools/優先。無ければ直下。
 find_tool() {
   name="$1"
-  if [ -f "$TOOLBASE/tools/$name" ]; then
-    echo "$TOOLBASE/tools/$name"
-    return 0
-  fi
-  if [ -f "$TOOLBASE/$name" ]; then
-    echo "$TOOLBASE/$name"
-    return 0
-  fi
+  if [ -f "$REPO_ROOT/tools/$name" ]; then echo "$REPO_ROOT/tools/$name"; return 0; fi
+  if [ -f "$REPO_ROOT/$name" ]; then echo "$REPO_ROOT/$name"; return 0; fi
   return 1
-}
-
-run() {
-  f="$1"; shift
-  path="$(find_tool "$f")" || {
-    echo "missing tool: $f (searched: $TOOLBASE/tools and $TOOLBASE)"
-    exit 127
-  }
-  exec "$path" "$@"
 }
 
 help() {
@@ -31,112 +25,43 @@ cat <<'EOF'
 zmesh - orchestrator/agent helper for ScaleFS
 
 USAGE
-  zmesh <command> [options]
+  zmesh <command> [args...]
 
 COMMANDS
-  init         Initialize zmesh config skeleton (creates/updates zmesh.conf and zmesh.d/)
-  start        Start zmesh agent (foreground)
-  stop         Stop zmesh agent (best-effort)
-  status       Show local status / quick diagnostics
-  doctor       Run environment checks (paths, permissions, zfs availability)
-  root         Manage ScaleFS roots (add/list/remove)
-  scalefs      Proxy to scalefs tool (run "zmesh scalefs help" for details)
-  virtualpath  Manage virtual path mapping (add/list/remove/doctor)
-  apply        Apply virtualpath rules (apply-virtualpath)
-  help         Show this help
+  init            Initialize zmesh config skeleton (zmesh.conf and zmesh.d/)
+  start           Start zmesh agent (foreground)
+  stop            Stop zmesh agent (best-effort)
+  status          Show local status / quick diagnostics
+  doctor          Run environment checks
+  root add        Register a scalefs root
+  root list       List registered roots
+  root remove     Remove a registered root
+  list            Shortcut for: zmesh scalefs list
+  scalefs         Proxy to scalefs tool (use: zmesh scalefs help)
+  help            Show this help
 
 COMMON OPTIONS
-  -h, --help   Show help for zmesh or for a subcommand
+  -h, --help      Show help
 
-DETAILS
-  For subcommand details:
-    zmesh <command> --help
+COMMAND HELP
+  zmesh <command> --help
 
-  To see scalefs help from zmesh:
-    zmesh scalefs help
-
-COMMAND HELP + EXAMPLES
-
+EXAMPLES
   zmesh init
-    Initialize config skeleton.
-    Options (typical):
-      -c, --config PATH      Config path (default: ./zmesh.conf or platform default)
-      -n, --node ID          Node id (default: hostname)
-      -s, --site NAME        Site name (default: default)
-    Examples:
-      zmesh init
-      zmesh init -c ./zmesh.conf -n node-01 -s site-a
-
-  zmesh start
-    Start agent (foreground).
-    Options:
-      -c, --config PATH      Config file path
-    Examples:
-      zmesh start -c ./zmesh.conf
-
-  zmesh stop
-    Stop agent (best-effort; implementation depends on your scripts).
-    Options:
-      -c, --config PATH      Config file path (if needed by stop script)
-    Examples:
-      zmesh stop
-
+  zmesh start -c ./zmesh.conf
   zmesh status
-    Show local status.
-    Examples:
-      zmesh status
-
-  zmesh doctor
-    Run environment checks.
-    Examples:
-      zmesh doctor
-
-  zmesh root add
-    Register a ScaleFS root (alias -> path).
-    Options:
-      -a, --alias NAME       Root alias
-      -p, --path PATH        Root path
-    Examples:
-      zmesh root add -a default -p "$HOME/scalefs"
-      zmesh root add        # interactive (if tool supports)
-
-  zmesh root list
-    List registered roots.
-    Examples:
-      zmesh root list
-
-  zmesh root remove
-    Remove a registered root.
-    Options:
-      -a, --alias NAME       Root alias
-      -y, --yes              Non-interactive
-    Examples:
-      zmesh root remove -a default -y
-
-  zmesh scalefs
-    Proxy to scalefs entry.
-    Examples:
-      zmesh scalefs help
-      zmesh scalefs add -r default -n DemoCell
-
-  zmesh virtualpath
-    Manage virtual path rules (virtualpath.d).
-    Subcommands:
-      add | list | remove | doctor
-    Examples:
-      zmesh virtualpath help
-      zmesh virtualpath list
-
-  zmesh apply
-    Apply virtualpath rules (apply-virtualpath).
-    Options depend on apply-virtualpath tool.
-    Examples:
-      zmesh apply
-      zmesh apply --help
+  zmesh root add -a default -p "$HOME/scalefs"
+  zmesh list
+  zmesh scalefs help
 EOF
 }
 
-# top-level dispatch
+run() {
+  f="$1"; shift
+  path="$(find_tool "$f")" || { echo "missing tool: $f (searched: $REPO_ROOT/tools and $REPO_ROOT)"; exit 127; }
+  exec "$path" "$@"
+}
+
 [ $# -ge 1 ] || { help; exit 0; }
 case "$1" in
   -h|--help|help) help; exit 0;;
@@ -152,39 +77,25 @@ case "$cmd" in
   doctor) run "doctor.sh" "$@";;
 
   root)
-    [ $# -ge 1 ] || { help; exit 2; }
-    sub="$1"; shift || true
+    sub="${1:-}"; [ -n "$sub" ] || { help; exit 2; }
+    shift || true
     case "$sub" in
       add)    run "add-root.sh" "$@";;
       list)   run "list-root.sh" "$@";;
       remove|rm) run "remove-root.sh" "$@";;
-      -h|--help|help) help; exit 0;;
       *) help; exit 2;;
     esac
+    ;;
+
+  list)
+    # convenience
+    spath="$(find_tool "scalefs")" || { echo "missing tool: scalefs"; exit 127; }
+    exec "$spath" list "$@"
     ;;
 
   scalefs)
     spath="$(find_tool "scalefs")" || { echo "missing tool: scalefs"; exit 127; }
     exec "$spath" "$@"
-    ;;
-
-  virtualpath)
-    # 入口は zmesh 側で統一しつつ tools 直呼び
-    [ $# -ge 1 ] || { echo "Usage: zmesh virtualpath {add|list|remove|doctor|help}"; exit 2; }
-    sub="$1"; shift || true
-    case "$sub" in
-      add)    run "add-virtualpath.sh" "$@";;
-      list)   run "list-virtualpath.sh" "$@";;
-      remove|rm) run "remove-virtualpath.sh" "$@";;
-      doctor) run "doctor-virtualpath.sh" "$@";;
-      -h|--help|help) echo "Usage: zmesh virtualpath {add|list|remove|doctor}"; exit 0;;
-      *) echo "Usage: zmesh virtualpath {add|list|remove|doctor}"; exit 2;;
-    esac
-    ;;
-
-  apply)
-    # apply-virtualpath に統一
-    run "apply-virtualpath.sh" "$@"
     ;;
 
   *) help; exit 2;;
