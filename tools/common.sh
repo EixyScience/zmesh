@@ -2,9 +2,8 @@
 # Copyright 2026 Satoshi Takashima
 # Copyright 2026 EixyScience, Inc.
 # Licensed under the Apache License, Version 2.0
-# http://www.apache.org/licenses/LICENSE-2.0# Common helpers for zmesh/scalefs tools (POSIX sh)
 
-#set -eu
+# Common helpers for zmesh/scalefs tools (POSIX sh)
 
 ZCONF_DIR="${ZCONF_DIR:-/usr/local/etc/zmesh}"
 
@@ -76,32 +75,22 @@ load_roots() {
     ' "$f"
   done
 
-  # no files -> no output
   [ "$found" -eq 1 ] || true
 }
 
-
-# common.sh に追加
-
-is_abs_path() {
-  case "$1" in
-    /*) return 0 ;;
-    [A-Za-z]:[\\/]* ) return 0 ;;  # 一応Windows風も
-  esac
-  return 1
-}
-
+# ------------------------------------------------------------
+# root spec resolver: alias OR actual path
+# ------------------------------------------------------------
 resolve_root_path() {
-  # $1 = root spec (alias or path)
   r="$1"
 
-  # 1) 実在するディレクトリならそれを採用
+  # 1) direct path
   if [ -n "$r" ] && [ -d "$r" ]; then
     printf "%s\n" "$r"
     return 0
   fi
 
-  # 2) alias として roots から引く
+  # 2) alias lookup
   p="$(load_roots | awk -F'|' -v a="$r" '$1==a{print $2; exit}')"
   if [ -n "$p" ]; then
     printf "%s\n" "$p"

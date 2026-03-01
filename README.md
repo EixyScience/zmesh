@@ -68,13 +68,7 @@ https://github.com/EixyScience/zmesh
 
 ---
 
-# Contributing
-
-Contributions are welcome.
-
----
-
 # Author
 
 Satoshi Takashima  
-EixyScience, Inc.
+EixyScience, Inc. Japan
